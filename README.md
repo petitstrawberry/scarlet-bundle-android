@@ -115,6 +115,9 @@ in `build.json` alongside `shield.policy`. The output
 retains the profile's isolated-process transitions and stable file-label
 persistence domain. Install it as `scarlet/boot/shield.policy` in the prepared
 boot inputs and record its digest in `boot-profile.json` before packaging.
+Include the empty `data/dalvik-cache` and `data/dalvik-cache/arm64` directories
+in that prepared inventory: the manager binds their labels before stock init
+starts. The stock profile does not depend on the old development sample APK.
 
 `producer/tools/build_session.py` combines the full stock archive with a prepared
 boot profile, the native app, frontend and graphics outputs. It verifies the

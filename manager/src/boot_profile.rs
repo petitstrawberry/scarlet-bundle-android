@@ -92,8 +92,14 @@ pub fn policy(android: &VfsView) -> Result<(Policy, Option<u32>), &'static str> 
     }
     std::println!("SCARLET_ANDROID_FILE_POLICY create={} relabel={}",create_rules.len(),relabel_rules.len());
     for (label, path) in &files {
-        let file = android.open(path, 0).map_err(|_| "boot file-label open")?;
-        policy.bind_file(&file, *label).map_err(|_| "boot file-label registration")?;
+        let file = android.open(path, 0).map_err(|error| {
+            std::println!("android: file-label open {path}: {error:?}");
+            "boot file-label open"
+        })?;
+        policy.bind_file(&file, *label).map_err(|error| {
+            std::println!("android: file-label registration {path} label={label}: {error:?}");
+            "boot file-label registration"
+        })?;
     }
     std::println!("SCARLET_ANDROID_BOOT_FILES labels={} exec_rules={}", files.len(), exec_transitions.len());
     std::println!("SCARLET_ANDROID_BOOT_POLICY labels={} property_grants={} transitions={}", labels.len(), rules.len(), transitions.len());
