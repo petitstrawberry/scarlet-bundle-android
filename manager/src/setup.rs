@@ -10,6 +10,8 @@ pub fn prepare(
     let android = native
         .rooted_at("/systems/android-aarch64")
         .map_err(|_| "Android image root")?;
+    std::vm::configure_layout(24, 16).map_err(|_| "Android address layout")?;
+    std::shield::hide_kernel_addresses().map_err(|_| "Shield kernel address constraint")?;
     let upper = VfsView::create("tmpfs", "size=64M").map_err(|_| "Android device storage")?;
     let devices = VfsView::overlay(&native, "/dev", Some((&upper, "/")))
         .map_err(|_| "Android device overlay")?;
@@ -47,15 +49,15 @@ pub fn prepare(
         .map_err(|_| "Android power supplies")?;
 
     let (policy, version) = super::boot_profile::policy(&android)?;
-    let version = version.ok_or("boot profile policy version")?;
-    let security = VfsView::create(
-        "android-selinux",
-        &std::format!(
+    let security_options = match version {
+        Some(version) => std::format!(
             "policy={},policy_version={version}",
             policy.as_handle().as_raw(),
         ),
-    )
-    .map_err(|_| "Android policy correspondence")?;
+        None => std::format!("policy={}", policy.as_handle().as_raw()),
+    };
+    let security = VfsView::create("android-selinux", &security_options)
+        .map_err(|_| "Android policy correspondence")?;
     android
         .bind("/sys/fs/selinux", &security, "/")
         .map_err(|_| "Android policy view")?;
