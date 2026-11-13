@@ -45,9 +45,12 @@ It checks real ext4 inodes, binary xattrs, hardlinks, system-as-root contents an
 reproducible archive bytes without root privileges.
 
 Once a release is ready, a normal Scarlet bundle can consume the generated
-manifest. The current SDK archive-to-image path still needs metadata retention;
-the candidate manifest is not enabled in Scarlet's default image. This stock
-archive alone is not a configured or boot-validated Scarlet Android environment.
+manifest. The metadata-preserving SDK importer is available in
+[`scarlet-sdk` commit 743bf61](https://github.com/petitstrawberry/scarlet-sdk/commit/743bf61),
+on `fix/archive-inode-metadata`. The complete archive was imported into ext2 and
+sampled for ownership and label retention. Scarlet's default SDK pin and image
+have not been switched. This stock archive alone is not a configured or
+boot-validated Scarlet Android environment.
 
 ## Licensing
 
