@@ -37,7 +37,10 @@ pub fn prepare(
     for path in ["/dev/pts", "/tmp"] {
         android
             .bind(path, &native, path)
-            .map_err(|_| "Android shared endpoint")?;
+            .map_err(|error| {
+                std::println!("android: shared endpoint {path}: {error:?}");
+                "Android shared endpoint"
+            })?;
     }
     let discovery = VfsView::create("linux-device-tree", "").map_err(|_| "device discovery")?;
     android
