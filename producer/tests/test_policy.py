@@ -77,6 +77,15 @@ def generic_manifest(relabels, evidence):
 
 
 class BootPolicyTests(unittest.TestCase):
+    def test_current_profile_disables_unsupported_perfetto_services(self):
+        profile = json.loads(
+            (PRODUCER.parent / "profiles/scarlet-arm64-flattened.json").read_text())
+        properties = profile["boot_properties"]
+        self.assertEqual(properties["persist.traced.enable"], "0")
+        self.assertEqual(properties["persist.traced_perf.enable"], "0")
+        self.assertEqual(
+            properties["persist.device_config.global_settings.sys_traced"], "0")
+
     def test_current_profile_keeps_isolated_processes_and_persistent_labels(self):
         profile = json.loads(
             (PRODUCER.parent / "profiles/scarlet-arm64-flattened.json").read_text())
