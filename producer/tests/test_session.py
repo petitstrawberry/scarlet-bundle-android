@@ -284,6 +284,9 @@ class SessionArchiveTests(unittest.TestCase):
             self.assertIn(f"sha256:{sha(first.read_bytes())}", bundle)
             self.assertIn('to = "/"', bundle)
             lock = json.loads((base / "one/android-session-aarch64-v1.2.3.lock.json").read_text())
+            with tarfile.open(fixture["aosp"]) as stock:
+                provenance = json.load(stock.extractfile(f"{producer.AOSP_ROOT}/provenance.json"))
+            self.assertEqual(lock["inputs"]["aosp"]["provenance"], provenance)
             self.assertEqual(lock["inputs"]["boot"]["source_scarlet_revision"], "c" * 40)
             self.assertEqual(lock["inputs"]["graphics"]["adapters"]["source_revisions"],
                              ["platform/prebuilts/vndk/v33@" + "e" * 40])

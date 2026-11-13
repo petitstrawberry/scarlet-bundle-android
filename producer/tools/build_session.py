@@ -727,14 +727,14 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
             elif base_digest != item.sha256:
                 raise InputError(f"boot file conflicts with AOSP content: {declared}")
             if declared in replacements:
-                provenance = port_replacements.get(declared, {})
-                if not isinstance(provenance, dict) or provenance.get("sha256") != item.sha256:
+                replacement = port_replacements.get(declared, {})
+                if not isinstance(replacement, dict) or replacement.get("sha256") != item.sha256:
                     raise InputError(f"boot replacement has no exact installed hash: {declared}")
                 stock_content_overrides[declared] = {
                     "resolved": final,
                     "aosp_sha256": base_digest,
                     "installed_sha256": item.sha256,
-                    "reason": provenance.get("reason"),
+                    "reason": replacement.get("reason"),
                 }
         if final in GRAPHICS_INSTALL_PATHS.values():
             boot_graphics_overrides[final] = {
