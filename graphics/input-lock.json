@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "android": {
+    "api": 33,
+    "abi": "arm64-v8a",
+    "validated_by": "stock-graphics-adapters-v4 build.json",
+    "validated_record_sha256": "1f9a4dd0fbee50f91dcc01b5ad51db54cc3ebd7e933b290071d8055699dcc686"
+  },
+  "source_inputs": {
+    "gralloc.c": "251738af56a69fc0093432ca0ca15fb5b7752cdff07ca35f4934a1ab42dd5d28",
+    "mapper.cpp": "fe9e5f8695ed5b9cc3802afdaff811c446da21b76f67c6ebb67b30c3fb6938c7",
+    "allocator-service.cpp": "46b878eb9bb617c3e2753fc6813a8e20d4cafbe4bc98630c5706b793e27a21eb",
+    "composer-service.cpp": "fc58044b6a85cab7926934b7dd4d1cfa56e5d489b15c485964b4f0d3f0ca8ecf",
+    "headers.json": "f121fc848397d7233b119f880791a08a8aad640cfdad1c5b844fc405c72aaaed",
+    "adapter-headers.json": "db4f5561ccb3d748d17c0fc771f8451d240d5f76a552c7e4a23a55dd0b798acb"
+  },
+  "libraries": {
+    "system/lib64/libc++.so": "56c39cfbf535246ed3ce615132ebc069bfc3d415497543b35194b574c0fac408",
+    "system/lib64/libutils.so": "acb3e9a4371e162966bdf871c38cb769099e72f3837e83a2ba3b337ea28c9f46",
+    "system/lib64/libhidlbase.so": "081b9b634c859ce42580c6a81dd64732ac70cb97a8bf7c99d9466e9adb11d806",
+    "system/lib64/libhardware.so": "b043a86169d223a19f93af49aafc0024ef30a4f2ea81612561e2df3a47a28387",
+    "system/lib64/liblog.so": "20af27adc3ad6ecc4b260de85be062becb8d101a3ad95da409aec5b930d76c8d",
+    "system/lib64/libcutils.so": "7bab7accfb8bf5ff81b245c00b8e4a5efae3127d1ba1edbdfb8eb38a189b884d",
+    "system/lib64/libsync.so": "212f7c50101e6601cde281b7f2d078b6e2fe2f13878b636dab4b8980e898ea82",
+    "system/lib64/android.hardware.graphics.mapper@2.0.so": "b08da625a99bfd863bd68f0606b1bee8b47a3a486f95327346ddde79cad362e7",
+    "system/lib64/android.hardware.graphics.allocator@2.0.so": "f8ef7bafb22da5b515a010140ae5b3eeeac6077e073a09a0a394cf983a53c8e5",
+    "system/lib64/android.hardware.graphics.mapper@3.0.so": "a41fed76692918a18be5315ef464be384bef279eb3850efd3c60977dcd3212aa",
+    "system/lib64/android.hardware.graphics.mapper@4.0.so": "69baffb37736db156aef5a232ae3ed0c6cfbbba3c44085de6168b779dccf4a7f",
+    "system/lib64/android.hardware.graphics.composer@2.1.so": "5716beb3ba32fffab74dcc40191e8c6c3d708b5bdf0b73bc78aac82375a4a027",
+    "system/lib64/libfmq.so": "6c1ffc72782d281e41197f22a50efd012477666214a1655ed1dfcdb99ed6934e"
+  }
+}

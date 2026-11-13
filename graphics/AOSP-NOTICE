@@ -1,0 +1,25 @@
+Android Open Source Project notice
+==================================
+
+The graphics sources are a bounded compatibility extraction for Scarlet.
+gralloc.c, the mapper entry point, and the allocator and composer service
+entry points are Scarlet source under the MIT license in LICENSE. Their
+upstream interface definitions and the generated HWC2 framebuffer adapter
+source are Android Open Source Project material.
+
+The build pins and verifies these official upstream sources:
+
+  https://android.googlesource.com/platform/hardware/libhardware/
+  https://android.googlesource.com/platform/hardware/interfaces/
+  https://android.googlesource.com/platform/prebuilts/vndk/
+
+The exact repository, revision, and path for each pinned tree or file are in
+adapter-headers.json and headers.json. Those files retain their upstream
+copyright and license notices when downloaded. AOSP source is licensed under
+the Apache License, Version 2.0:
+
+  https://www.apache.org/licenses/LICENSE-2.0
+
+The HWC2OnFbAdapter source is transformed in the build directory to preserve
+the validated dynamic display behavior; the downloaded header cache is not
+modified.
