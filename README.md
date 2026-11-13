@@ -91,11 +91,16 @@ includes the whole-View mount preservation fix and the native factory API.
 The complete session archive has imported through the SDK and booted the normal
 four-core HVF desktop. A manual catalog launch received both capabilities,
 created the Shield policy, registered 81 boot file labels and started stock init
-in its own PID/mount namespace. The native Android window, SurfaceFlinger and
-graphics HAL processes were observed. Home and app display remain unverified.
-The last boot stopped at i18n APEX library resolution; the producer now preserves
-the absolute symlink targets needed after APEX mount relocation. Stock logd
-also did not remain running. Configured launches require the exact
+in its own PID/mount namespace. After preserving APEX symlink targets through
+archive import, Zygote and system_server also started. The native Android window,
+SurfaceFlinger and graphics HAL processes were observed; the window content
+remained black. Home and app display through this launch path remain unverified.
+Stock init diagnostics exposed label-restoration failures from preserved AOSP
+inode labels and unsupported SYSLOG/AUDIT_CONTROL capabilities requested by
+stock logd. The producer now derives compact relabel sets from concrete stock
+policy evidence. The older diagnostic launch also had the logd capability
+failure and supplied a separate log receiver; its boot result does not establish
+that stock logging worked. Configured launches require the exact
 command and capture startup errors in the native logd. The stock init lifecycle
 begins after an explicit catalog launch.
 The full producer archive above contains stock AOSP only.
