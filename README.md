@@ -13,7 +13,9 @@ The current producer exports the AOSP Android 13 ARM64 emulator image with tag
 `default`. Google APIs and Play Store images are rejected. The native display,
 input and network adapters are under `runtime/`; the native session manager is
 under `manager/`, and the graphics HAL and stock adapters are under `graphics/`.
-The prepared boot profile still comes from the Scarlet development inputs.
+The boot profile and its Shield policy translator are under `profiles/` and
+`producer/policy/`. Prepared init/APEX files and source-policy exports still come
+from the Scarlet development inputs.
 No binary release has been published:
 the exact corresponding-source record for SDK build 10940250 is still missing.
 
@@ -92,6 +94,26 @@ stock init and the Android home screen through this path remain unverified.
 The full producer archive above contains stock AOSP only.
 
 ## Complete session archive
+
+Generate the native Shield records from the checked-in profile and the verified
+stock policy exports:
+
+```sh
+python3 producer/tools/build_policy.py \
+  --android-root /path/to/assembled-android-root \
+  --service-policy /path/to/service-policy.txt \
+  --service-manifest /path/to/service-policy.json \
+  --generic-manifest /path/to/generic-service-policy.json \
+  --output producer/artifacts/policy
+```
+
+The Android root supplies the pinned compiled policy, property contexts and
+declared init files. The producer verifies the compiled-policy and init-file
+hashes and the relationship between both exports, then records all input digests
+in `build.json` alongside `shield.policy`. The output
+retains the profile's isolated-process transitions and stable file-label
+persistence domain. Install it as `scarlet/boot/shield.policy` in the prepared
+boot inputs and record its digest in `boot-profile.json` before packaging.
 
 `producer/tools/build_session.py` combines the full stock archive with a prepared
 boot profile, the native app, frontend and graphics outputs. It verifies the

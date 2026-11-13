@@ -7,6 +7,16 @@ derive from `petitstrawberry/Scarlet` commit
 in each source directory. See `runtime/ATTRIBUTION.md` for AOSP-derived interfaces.
 These licenses do not relicense Android or components in the system images.
 
+The boot profile in `profiles/scarlet-arm64-flattened.json` is copied from
+`tools/android-compat/profiles/scarlet-arm64-flattened.json` at Scarlet commit
+`bad9815a662ae15f3822594b024326b70f3acaaa` (SHA-256
+`0b6bd76df28e4ca025acffc256b60bee5364230e893e705913ec629096e0f0b6`).
+The pure policy generation and selection-validation code in `producer/policy/`
+is extracted from the same revision's `tools/android-compat/boot_profile.py`,
+`service_policy.py`, `vintf_inputs.py`, `host_services.py` and `desktop_inputs.py`.
+It retains the original MIT license; VM execution, staging and export tools are
+outside this extraction.
+
 ## Input image
 
 - Package: Android SDK System Image
