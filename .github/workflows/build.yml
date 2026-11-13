@@ -1,0 +1,59 @@
+name: Build Android userspace bundle
+
+on:
+  push:
+    paths:
+      - 'producer/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'producer/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: New release version
+        required: true
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y e2fsprogs
+      - run: python3 -m py_compile producer/tools/build_rootfs.py
+      - run: python3 -m json.tool producer/lock.json >/dev/null
+      - run: python3 -m unittest discover -s producer/tests
+
+  build:
+    if: github.event_name == 'workflow_dispatch'
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install extraction tools
+        run: sudo apt-get update && sudo apt-get install -y e2fsprogs zstd
+      - name: Fetch pinned AOSP image
+        run: |
+          mkdir -p producer/cache
+          python3 - <<'PY'
+          import json, urllib.request
+          from pathlib import Path
+          lock=json.loads(Path('producer/lock.json').read_text())['android']
+          urllib.request.urlretrieve(lock['url'], 'producer/cache/arm64-v8a-33_r02.zip')
+          PY
+      - name: Build bundle
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 producer/tools/build_rootfs.py --sdk-image producer/cache/arm64-v8a-33_r02.zip --version "$VERSION" --output producer/artifacts
+      - name: Validate archive
+        env:
+          VERSION: ${{ inputs.version }}
+        run: python3 producer/tests/check_archive.py "producer/artifacts/android-aarch64-${VERSION}.tar.gz"
+      # Binary publication is added with the exact corresponding-source bundle.
+      - run: cat producer/artifacts/SHA256SUMS
