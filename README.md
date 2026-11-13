@@ -69,28 +69,29 @@ cd runtime
 cargo build --locked --release --target aarch64-unknown-scarlet
 ```
 
-`manager/` builds the native `android` application with the same command. It takes
-`--view-handle FD`, an administrator View explicitly transferred by the host
-launcher, and constructs Android's Environment and device/input views. It starts
-stock Android init in a child PID/mount namespace and owns that process scope.
-The display frontend connects to the desktop's existing SWS. Closing its window
-ends the Android session.
+`manager/` builds the native `android` application with the same command. Its
+normal launch is `--view-handle 3 --policy-factory-handle 4`: the host transfers
+an administrator View and a policy-factory capability with distinct descriptors.
+The manager constructs its Shield policy during setup, then closes the policy
+factory before starting Android children. It constructs Android's
+Environment and device/input views, starts stock Android init in a child
+PID/mount namespace, and owns that process scope. The display frontend connects
+to the desktop's existing SWS. Closing its window ends the Android session.
 
 `manager/app.toml` is the normal Scarlet app recipe. `bundles/native/bundle.toml`
 installs it at `/applications/android.app`, the frontend at `/bin/android-runtime`,
 and the explicit administrator grant under `/etc/stemd.d/capabilities`. The
-generated app descriptor provides its catalog entry. This requires Scarlet's
-explicit application grants from commit
-[`e62bf8855`](https://github.com/petitstrawberry/Scarlet/commit/e62bf8855), including
-the whole-View mount preservation fix
-[`bad9815a6`](https://github.com/petitstrawberry/Scarlet/commit/bad9815a6).
-Both binaries cross-build for AArch64. On a normal four-core HVF desktop, the
-catalog entry launches the manager with its View, rejects a changed command,
-and captures startup errors in logd. Direct invocation without a delegated View
-is rejected. The complete session archive imports through the SDK and boots the
-normal desktop. Manager launch now reaches Shield policy construction after
-connecting its Views, but construction authority still needs explicit delegation;
-stock init and the Android home screen through this path remain unverified.
+generated app descriptor provides its catalog entry with the same exact argv.
+The grant pairs `target = 3` with `shield_policy_factory = 4`. This requires
+Scarlet's explicit factory grants from commit
+[`7c96ed773`](https://github.com/petitstrawberry/Scarlet/commit/7c96ed773), which
+includes the whole-View mount preservation fix and the native factory API.
+The complete session archive has imported through the SDK and booted the normal
+four-core HVF desktop. A manual catalog launch reached Shield policy construction
+with its delegated View. The new factory grant completes that launch contract;
+its runtime verification and stock init/home startup remain pending. Configured
+launches require the exact command and capture startup errors in logd. The stock
+init lifecycle begins after an explicit catalog launch.
 The full producer archive above contains stock AOSP only.
 
 ## Complete session archive

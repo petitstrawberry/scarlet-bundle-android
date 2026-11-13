@@ -145,14 +145,15 @@ def make_native(base: Path) -> tuple[Path, Path, Path, Path, Path]:
     write_bytes(app / "bin/android", elf, 0o755)
     write_bytes(app / "org.scarlet.Android.desktop", (
         "[Desktop Entry]\nType=Application\nName=Android\n"
-        'Exec=bin/android "--view-handle" "3"\n'
+        'Exec=bin/android "--view-handle" "3" "--policy-factory-handle" "4"\n'
         "X-Scarlet-AppFormat=1\nX-Scarlet-Target=aarch64-unknown-scarlet\n"
     ).encode())
     runtime = write_bytes(base / "android-runtime", elf, 0o755)
     manager = base / "manager-fs"
     write_bytes(manager / "etc/stemd.d/capabilities/android.toml", (
         '[[application]]\nid = "org.scarlet.Android"\n'
-        'argv = ["/applications/android.app/bin/android", "--view-handle", "3"]\n\n'
+        'argv = ["/applications/android.app/bin/android", "--view-handle", "3", '
+        '"--policy-factory-handle", "4"]\nshield_policy_factory = 4\n\n'
         '[[application.view]]\nroot = "/"\ntarget = 3\n'
     ).encode())
     hal = base / "graphics/hal"
@@ -167,6 +168,21 @@ def make_native(base: Path) -> tuple[Path, Path, Path, Path, Path]:
 
 
 class SessionArchiveTests(unittest.TestCase):
+    def test_native_contract_requires_both_capabilities(self):
+        with tempfile.TemporaryDirectory(prefix="session-test-") as directory:
+            base = Path(directory)
+            fixture = self.fixture(base)
+            capability = fixture["manager"] / "etc/stemd.d/capabilities/android.toml"
+            capability.write_text(capability.read_text().replace("shield_policy_factory = 4\n", ""))
+            with self.assertRaisesRegex(producer.InputError, "View and policy factory"):
+                producer.validate_manager_fs(fixture["manager"])
+
+            descriptor = fixture["app"] / "org.scarlet.Android.desktop"
+            descriptor.write_text(descriptor.read_text().replace(
+                ' "--policy-factory-handle" "4"', ""))
+            with self.assertRaisesRegex(producer.InputError, "native AArch64 manager"):
+                producer.validate_android_app(fixture["app"])
+
     def test_stock_alias_chains_and_cycles(self):
         links = {"etc": "system/etc", "system/etc": "../config"}
         kinds = {"etc": "symlink", "system/etc": "symlink", "config": "dir"}

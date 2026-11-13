@@ -14,6 +14,7 @@ use std::{
     handle::Handle,
     println,
     process_scope::ProcessScope,
+    shield::PolicyFactory,
 };
 
 fn wait_for_program(pid: i32) -> Result<i32, &'static str> {
@@ -79,17 +80,32 @@ impl Drop for Session {
 
 fn run(stdio: &[Handle]) -> Result<i32, &'static str> {
     let args = std::env::args_vec();
-    if args.len() != 3 || args[1] != "--view-handle" {
-        return Err("usage: android --view-handle FD (an explicitly delegated native View)");
+    if args.len() != 5
+        || args[1] != "--view-handle"
+        || args[3] != "--policy-factory-handle"
+    {
+        return Err("usage: android --view-handle FD --policy-factory-handle FD");
     }
-    let raw: i32 = args[2].parse().map_err(|_| "invalid View descriptor")?;
-    if raw < 3 {
-        return Err("View descriptor overlaps standard I/O");
+    let view_raw: i32 = args[2].parse().map_err(|_| "invalid View descriptor")?;
+    let factory_raw: i32 = args[4]
+        .parse()
+        .map_err(|_| "invalid PolicyFactory descriptor")?;
+    if view_raw < 3 || factory_raw < 3 {
+        return Err("capability descriptor overlaps standard I/O");
+    }
+    if view_raw == factory_raw {
+        return Err("View and PolicyFactory descriptors must be distinct");
     }
     // SAFETY: the launch contract transfers this owned descriptor exactly once.
-    let native =
-        VfsView::from_handle(unsafe { Handle::from_raw(raw) }.map_err(|_| "View descriptor")?)
-            .map_err(|_| "View capability required")?;
+    let native = VfsView::from_handle(
+        unsafe { Handle::from_raw(view_raw) }.map_err(|_| "View descriptor")?,
+    )
+    .map_err(|_| "View capability required")?;
+    // SAFETY: the launch contract transfers this owned descriptor exactly once.
+    let factory = PolicyFactory::from_handle(
+        unsafe { Handle::from_raw(factory_raw) }.map_err(|_| "PolicyFactory descriptor")?,
+    )
+    .map_err(|_| "PolicyFactory capability required")?;
     // Validate administration before changing any Android state. A use-only
     // View cannot be converted into construction authority by this program.
     let native = native
@@ -105,6 +121,9 @@ fn run(stdio: &[Handle]) -> Result<i32, &'static str> {
         .collect();
 
     let (environment, android, policy, display) = setup::prepare(native)?;
+    // The initialized existing policy owns its administrative capability. The
+    // factory must not survive into the Android init or native child processes.
+    drop(factory);
     let executable = android
         .open("/system/bin/init", 0)
         .map_err(|_| "stock Android init")?;

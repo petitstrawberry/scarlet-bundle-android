@@ -43,7 +43,7 @@ dependencies = [
 [[package]]
 name = "scarlet-abi"
 version = "1.0.0"
-source = "git+https://github.com/petitstrawberry/Scarlet?rev=2d5308067367a2f697cfed45b90d8f3c324a7c81#2d5308067367a2f697cfed45b90d8f3c324a7c81"
+source = "git+https://github.com/petitstrawberry/Scarlet?rev=7c96ed77387cbe9dd01119322d55f3df2c512ffc#7c96ed77387cbe9dd01119322d55f3df2c512ffc"
 
 [[package]]
 name = "scarlet-android-app-policy"
@@ -63,7 +63,7 @@ dependencies = [
 [[package]]
 name = "scarlet-os"
 version = "1.0.0"
-source = "git+https://github.com/petitstrawberry/Scarlet?rev=2d5308067367a2f697cfed45b90d8f3c324a7c81#2d5308067367a2f697cfed45b90d8f3c324a7c81"
+source = "git+https://github.com/petitstrawberry/Scarlet?rev=7c96ed77387cbe9dd01119322d55f3df2c512ffc#7c96ed77387cbe9dd01119322d55f3df2c512ffc"
 dependencies = [
  "scarlet-abi",
  "scarlet-rt",
@@ -73,7 +73,7 @@ dependencies = [
 [[package]]
 name = "scarlet-rt"
 version = "1.0.0"
-source = "git+https://github.com/petitstrawberry/Scarlet?rev=2d5308067367a2f697cfed45b90d8f3c324a7c81#2d5308067367a2f697cfed45b90d8f3c324a7c81"
+source = "git+https://github.com/petitstrawberry/Scarlet?rev=7c96ed77387cbe9dd01119322d55f3df2c512ffc#7c96ed77387cbe9dd01119322d55f3df2c512ffc"
 dependencies = [
  "lock_api",
  "scarlet-sys",
@@ -84,7 +84,7 @@ dependencies = [
 [[package]]
 name = "scarlet-std"
 version = "1.0.0"
-source = "git+https://github.com/petitstrawberry/Scarlet?rev=2d5308067367a2f697cfed45b90d8f3c324a7c81#2d5308067367a2f697cfed45b90d8f3c324a7c81"
+source = "git+https://github.com/petitstrawberry/Scarlet?rev=7c96ed77387cbe9dd01119322d55f3df2c512ffc#7c96ed77387cbe9dd01119322d55f3df2c512ffc"
 dependencies = [
  "hashbrown",
  "scarlet-abi",
@@ -97,7 +97,7 @@ dependencies = [
 [[package]]
 name = "scarlet-sys"
 version = "1.0.0"
-source = "git+https://github.com/petitstrawberry/Scarlet?rev=2d5308067367a2f697cfed45b90d8f3c324a7c81#2d5308067367a2f697cfed45b90d8f3c324a7c81"
+source = "git+https://github.com/petitstrawberry/Scarlet?rev=7c96ed77387cbe9dd01119322d55f3df2c512ffc#7c96ed77387cbe9dd01119322d55f3df2c512ffc"
 dependencies = [
  "scarlet-abi",
 ]

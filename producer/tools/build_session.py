@@ -543,9 +543,9 @@ def validate_android_app(app: Path) -> ComponentTree:
     descriptor = app / "org.scarlet.Android.desktop"
     require_regular(descriptor, "manager app descriptor")
     text = descriptor.read_text()
-    required = ("X-Scarlet-AppFormat=1", "X-Scarlet-Target=aarch64-unknown-scarlet",
-                'Exec=bin/android "--view-handle" "3"')
-    if any(value not in text for value in required):
+    expected_exec = 'Exec=bin/android "--view-handle" "3" "--policy-factory-handle" "4"'
+    required = ("X-Scarlet-AppFormat=1", "X-Scarlet-Target=aarch64-unknown-scarlet")
+    if any(value not in text for value in required) or text.splitlines().count(expected_exec) != 1:
         raise InputError("manager app descriptor is not the native AArch64 manager")
     executable = app / "bin/android"
     require_regular(executable, "manager executable")
@@ -575,8 +575,11 @@ def validate_manager_fs(path: Path) -> ComponentTree:
         raise InputError("manager capability is invalid TOML") from error
     apps = document.get("application")
     if (not isinstance(apps, list) or len(apps) != 1 or apps[0].get("id") != "org.scarlet.Android" or
-            apps[0].get("argv") != ["/applications/android.app/bin/android", "--view-handle", "3"]):
-        raise InputError("manager capability does not grant the native app its View")
+            apps[0].get("argv") != ["/applications/android.app/bin/android",
+                                    "--view-handle", "3", "--policy-factory-handle", "4"] or
+            apps[0].get("view") != [{"root": "/", "target": 3}] or
+            apps[0].get("shield_policy_factory") != 4):
+        raise InputError("manager capability does not grant the native app its View and policy factory")
     return tree
 
 

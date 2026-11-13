@@ -11,7 +11,7 @@ name = "android"
 path = "src/main.rs"
 
 [dependencies]
-scarlet-std = { git = "https://github.com/petitstrawberry/Scarlet", rev = "2d5308067367a2f697cfed45b90d8f3c324a7c81" }
+scarlet-std = { git = "https://github.com/petitstrawberry/Scarlet", rev = "7c96ed77387cbe9dd01119322d55f3df2c512ffc" }
 scarlet-android-app-policy = { path = "../app-policy" }
 
 [profile.release]

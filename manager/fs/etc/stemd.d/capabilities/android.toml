@@ -1,6 +1,7 @@
 [[application]]
 id = "org.scarlet.Android"
-argv = ["/applications/android.app/bin/android", "--view-handle", "3"]
+argv = ["/applications/android.app/bin/android", "--view-handle", "3", "--policy-factory-handle", "4"]
+shield_policy_factory = 4
 
 [[application.view]]
 root = "/"
