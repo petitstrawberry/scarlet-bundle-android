@@ -10,8 +10,10 @@ Scarlet consumes a verified release archive through a normal `bundle.toml`
 `archive` layer.
 
 The current producer exports the AOSP Android 13 ARM64 emulator image with tag
-`default`. Google APIs and Play Store images are rejected. The launcher and HALs
-have not yet been migrated from Scarlet. No binary release has been published:
+`default`. Google APIs and Play Store images are rejected. The native display,
+input and network adapters are under `runtime/`; the native session manager is
+under `manager/`. The graphics HAL and image configuration still use the Scarlet
+development inputs. No binary release has been published:
 the exact corresponding-source record for SDK build 10940250 is still missing.
 
 ## Build
@@ -52,9 +54,44 @@ sampled for ownership and label retention. Scarlet's default SDK pin and image
 have not been switched. This stock archive alone is not a configured or
 boot-validated Scarlet Android environment.
 
+## Native userspace
+
+`runtime/` contains the existing native window frontend, Android InputManager
+bridge and network adapters. Its dependencies on Scarlet's shared libraries and
+ScarletUI are pinned Git revisions. Build the AArch64 frontend with the Scarlet
+Rust toolchain from the crate directory:
+
+```sh
+cd runtime
+cargo build --locked --release --target aarch64-unknown-scarlet
+```
+
+`manager/` builds the native `android` application with the same command. It takes
+`--view-handle FD`, an administrator View explicitly transferred by the host
+launcher, and constructs Android's Environment and device/input views. It starts
+stock Android init in a child PID/mount namespace and owns that process scope.
+The display frontend connects to the desktop's existing SWS. Closing its window
+ends the Android session.
+
+`manager/app.toml` is the normal Scarlet app recipe. `bundles/native/bundle.toml`
+installs it at `/applications/android.app`, the frontend at `/bin/android-runtime`,
+and the explicit administrator grant under `/etc/stemd.d/capabilities`. The
+generated app descriptor provides its catalog entry. This requires Scarlet's
+explicit application grants from commit
+[`e62bf8855`](https://github.com/petitstrawberry/Scarlet/commit/e62bf8855).
+Both binaries cross-build for AArch64. On a normal four-core HVF desktop, the
+catalog entry launches the manager with its View, rejects a changed command,
+and captures startup errors in logd. Direct invocation without a delegated View
+is rejected. This test used a desktop without the Android root; a complete
+Android session through the new manager remains unverified. The full producer
+archive does not yet contain the required Scarlet Android boot profile and
+adapters.
+
 ## Licensing
 
-The repository's MIT license covers only the producer scripts and documentation.
+The producer and native Scarlet sources use MIT; copied Scarlet sources retain
+their original license. AOSP-derived adapter interfaces retain Apache 2.0 notices
+and the license in `runtime/network/LICENSE-APACHE-2.0`.
 The Android images remain under their upstream licenses. The SDK `NOTICE.txt`,
 image identity, build fingerprint, and exact input digest are retained in every
 archive. See [ATTRIBUTION.md](ATTRIBUTION.md).

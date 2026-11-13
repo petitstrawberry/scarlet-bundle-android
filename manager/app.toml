@@ -1,0 +1,12 @@
+[app]
+id = "org.scarlet.Android"
+slug = "android"
+name = "Android"
+exec = "bin/android"
+args = ["--view-handle", "3"]
+
+[build]
+kind = "cargo"
+source = "."
+package = "scarlet-android-manager"
+bin = "android"

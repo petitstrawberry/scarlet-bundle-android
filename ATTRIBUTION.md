@@ -1,8 +1,11 @@
 # Third-party contents
 
-The MIT license in this repository covers its original producer code and
-documentation. It does not relicense Android or any component in the system
-images.
+The MIT license in this repository covers its original producer and native
+userspace code. The manager, app policy translator and display/input frontend
+derive from `petitstrawberry/Scarlet` commit
+`2d5308067367a2f697cfed45b90d8f3c324a7c81`; their original MIT license is retained
+in each source directory. See `runtime/ATTRIBUTION.md` for AOSP-derived interfaces.
+These licenses do not relicense Android or components in the system images.
 
 ## Input image
 

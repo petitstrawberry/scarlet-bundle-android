@@ -1,0 +1,7 @@
+[[application]]
+id = "org.scarlet.Android"
+argv = ["/applications/android.app/bin/android", "--view-handle", "3"]
+
+[[application.view]]
+root = "/"
+target = 3

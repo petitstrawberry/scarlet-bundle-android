@@ -1,0 +1,16 @@
+[[layers]]
+kind = "app"
+source = "../../manager/app.toml"
+to = "/applications/android.app"
+
+[[layers]]
+kind = "cargo"
+source = "../../runtime"
+package = "android-runtime"
+bin = "android-runtime"
+to = "/bin/android-runtime"
+
+[[layers]]
+kind = "copy"
+source = "../../manager/fs"
+to = "/"
