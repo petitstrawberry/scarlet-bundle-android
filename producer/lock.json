@@ -1,0 +1,16 @@
+{
+  "schema": 1,
+  "android": {
+    "api": 33,
+    "abi": "arm64-v8a",
+    "tag": "default",
+    "url": "https://dl.google.com/android/repository/sys-img/android/arm64-v8a-33_r02.zip",
+    "sha256": "55ba9a20d473dd5351c77342016956342c40375f3e073b65a43dc9db13ccc5c6"
+  },
+  "partitions": {
+    "system": [2048, 1636144],
+    "system_ext": [1638400, 285816],
+    "product": [1925120, 565800],
+    "vendor": [2492416, 177408]
+  }
+}

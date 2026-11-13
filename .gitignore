@@ -1,0 +1,5 @@
+/producer/artifacts/
+/producer/cache/
+**/__pycache__/
+*.pyc
+*.log
