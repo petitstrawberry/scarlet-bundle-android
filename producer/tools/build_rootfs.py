@@ -19,6 +19,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = ROOT / "producer/lock.json"
 ARCHIVE_ROOT = "android-aarch64"
+ALLOWED_GUEST_ALIAS_ROOTS = (
+    "/apex/", "/config/", "/data/", "/data_mirror/", "/debug_ramdisk/",
+    "/dev/", "/linkerconfig/", "/metadata/", "/mnt/", "/odm/", "/odm_dlkm/",
+    "/proc/", "/product/", "/sdcard/", "/storage/", "/sys/", "/system/",
+    "/system_dlkm/", "/system_ext/", "/vendor/", "/vendor_dlkm/",
+)
 
 
 def sha256(path: Path) -> str:
@@ -163,11 +169,25 @@ def merge_tree(source: Path, destination: Path) -> None:
             raise ValueError("unsupported partition node: " + str(node))
 
 
+def guest_link_resolution(link_name: str, target: str) -> str:
+    """Resolve a guest symlink target without touching the host filesystem."""
+    if not target or "\\" in target or "\0" in target:
+        raise ValueError("invalid guest symlink target: " + link_name)
+    if target.startswith("/"):
+        resolved = posixpath.normpath(target)
+    else:
+        resolved = posixpath.normpath(posixpath.join("/", posixpath.dirname(link_name), target))
+    if resolved == "/" or not resolved.startswith(ALLOWED_GUEST_ALIAS_ROOTS):
+        raise ValueError("guest symlink escapes the Android userspace: " + link_name)
+    return resolved
+
+
 def normalize_link(link_name: str, target: str) -> str:
+    """Preserve absolute guest targets after validating their destination."""
     if not target.startswith("/"):
         return target
-    absolute_target = target.lstrip("/")
-    return posixpath.relpath(absolute_target, posixpath.dirname(link_name))
+    guest_link_resolution(link_name, target)
+    return target
 
 
 def assemble_root(partitions: Path, temporary: Path) -> tuple[Path, dict]:

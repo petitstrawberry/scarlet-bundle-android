@@ -33,7 +33,12 @@ ROOT = Path(__file__).resolve().parents[2]
 AOSP_ROOT = "android-aarch64"
 OUTER_ROOT = "android-session-aarch64"
 ANDROID_ROOT = "systems/android-aarch64"
-ALLOWED_BOOT_ALIAS_ROOTS = ("/system/", "/system_ext/", "/product/", "/vendor/", "/apex/")
+ALLOWED_BOOT_ALIAS_ROOTS = (
+    "/apex/", "/config/", "/data/", "/data_mirror/", "/debug_ramdisk/",
+    "/dev/", "/linkerconfig/", "/metadata/", "/mnt/", "/odm/", "/odm_dlkm/",
+    "/proc/", "/product/", "/sdcard/", "/storage/", "/sys/", "/system/",
+    "/system_dlkm/", "/system_ext/", "/vendor/", "/vendor_dlkm/",
+)
 GRAPHICS_INSTALL_PATHS = {
     "hal/gralloc.scarlet.so": "vendor/lib64/hw/gralloc.scarlet.so",
     "adapters/android.hardware.graphics.mapper@2.0-impl.scarlet.so":
@@ -356,6 +361,13 @@ def verify_boot_inputs(root: Path, manifest_path: Path | None) -> BootOverlay:
 
 
 def normalize_guest_link(name: str, target: Any) -> str:
+    """Validate a prepared-overlay link while retaining its target form."""
+    guest_link_resolution(name, target)
+    return target
+
+
+def guest_link_resolution(name: str, target: Any) -> str:
+    """Return the guest absolute path represented by a symlink target."""
     if not isinstance(target, str) or not target or len(target) > 4096 or "\\" in target or "\0" in target:
         raise InputError(f"invalid guest symlink target: {name}")
     if target.startswith("/"):
@@ -364,7 +376,7 @@ def normalize_guest_link(name: str, target: Any) -> str:
         resolved = posixpath.normpath(posixpath.join("/", posixpath.dirname(name), target))
     if resolved == "/" or not resolved.startswith(ALLOWED_BOOT_ALIAS_ROOTS):
         raise InputError(f"guest symlink escapes the Android userspace: {name}")
-    return posixpath.relpath(resolved.lstrip("/"), posixpath.dirname(name))
+    return resolved
 
 
 def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
@@ -448,21 +460,13 @@ def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
     if not isinstance(source_info, dict) or source_info.get("sha256") != boot.metadata.get("sdk_sha256"):
         raise InputError("AOSP SDK hash does not match the prepared boot inputs")
     for name, target in links.items():
-        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
-        if resolved == "." or resolved == ".." or resolved.startswith("../"):
-            raise InputError(f"escaping AOSP symlink: {name}")
+        guest_link_resolution(name, target)
     return archive_digest, kinds, links, digests, provenance
 
 
 def normalize_existing_link(name: str, target: str) -> str:
-    if target.startswith("/"):
-        relative = posixpath.relpath(target.lstrip("/"), posixpath.dirname(name))
-    else:
-        relative = target
-    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), relative))
-    if resolved == ".." or resolved.startswith("../"):
-        raise InputError(f"escaping AOSP symlink: {name}")
-    return relative
+    guest_link_resolution(name, target)
+    return target
 
 
 def resolve_stock_alias(path: str, links: dict[str, str], kinds: dict[str, str], *,

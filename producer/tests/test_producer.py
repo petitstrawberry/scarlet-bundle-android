@@ -10,6 +10,40 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import build_rootfs as producer
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import check_archive
+
+
+class SymlinkMetadataTests(unittest.TestCase):
+    def test_apex_absolute_alias_survives_mount_relocation(self):
+        source = "system/apex/com.android.i18n/lib64/libbase.so"
+        relocated = "apex/com.android.i18n/lib64/libbase.so"
+        target = "/system/lib64/libbase.so"
+        self.assertEqual(producer.normalize_link(source, target), target)
+        self.assertEqual(producer.guest_link_resolution(source, target), target)
+        self.assertEqual(producer.guest_link_resolution(relocated, target), target)
+
+    def test_non_apex_absolute_alias_is_preserved(self):
+        self.assertEqual(producer.normalize_link("init", "/system/bin/app"), "/system/bin/app")
+
+    def test_absolute_alias_must_stay_in_guest_userspace(self):
+        with self.assertRaisesRegex(ValueError, "escapes the Android userspace"):
+            producer.normalize_link(
+                "init",
+                "/outside/libbase.so",
+            )
+
+    def test_archive_validator_accepts_absolute_guest_aliases(self):
+        check_archive.validate_symlink(
+            "android-aarch64/system/apex/com.android.i18n/lib64/libbase.so",
+            "/system/lib64/libbase.so",
+        )
+        check_archive.validate_symlink("android-aarch64/init", "/system/bin/app")
+        with self.assertRaisesRegex(ValueError, "escapes Android userspace"):
+            check_archive.validate_symlink(
+                "android-aarch64/init",
+                "/outside/libbase.so",
+            )
 
 
 @unittest.skipUnless(shutil.which("mke2fs") and shutil.which("debugfs"), "e2fsprogs required")
@@ -27,6 +61,11 @@ class ImageExportTests(unittest.TestCase):
                     (tree / "system/bin/app").write_bytes(b"app contents")
                     os.link(tree / "system/bin/app", tree / "system/bin/app-link")
                     (tree / "init").symlink_to("/system/bin/app")
+                    (tree / "system/lib64").mkdir(parents=True)
+                    (tree / "system/lib64/libbase.so").write_bytes(b"stock libbase\n")
+                    (tree / "system/apex/com.android.i18n/lib64").mkdir(parents=True)
+                    (tree / "system/apex/com.android.i18n/lib64/libbase.so").symlink_to(
+                        "/system/lib64/libbase.so")
                     (tree / "init.environ.rc").write_text("source init configuration\n")
                     (tree / ".hidden").write_text("hidden path\n")
                     for mount in ("product", "system_ext", "vendor", "apex"):
@@ -72,7 +111,13 @@ class ImageExportTests(unittest.TestCase):
                 self.assertEqual(app.mtime, 0x652801c3)
                 self.assertEqual(app.pax_headers["SCHILY.xattr.security.selinux"].encode(), label.read_bytes())
                 self.assertEqual(app.pax_headers["SCHILY.xattr.security.capability"].encode("utf-8", "surrogateescape"), binary.read_bytes())
-                self.assertEqual(archive.getmember("android-aarch64/init").linkname, "system/bin/app")
+                self.assertEqual(archive.getmember("android-aarch64/init").linkname, "/system/bin/app")
+                self.assertEqual(
+                    archive.getmember(
+                        "android-aarch64/system/apex/com.android.i18n/lib64/libbase.so"
+                    ).linkname,
+                    "/system/lib64/libbase.so",
+                )
                 hardlink = archive.getmember("android-aarch64/system/bin/app-link")
                 self.assertTrue(hardlink.islnk())
                 self.assertEqual(hardlink.linkname, app.name)

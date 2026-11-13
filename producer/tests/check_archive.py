@@ -9,6 +9,23 @@ import tarfile
 from pathlib import Path
 
 ROOT = "android-aarch64"
+ALLOWED_GUEST_ALIAS_ROOTS = (
+    "/apex/", "/config/", "/data/", "/data_mirror/", "/debug_ramdisk/",
+    "/dev/", "/linkerconfig/", "/metadata/", "/mnt/", "/odm/", "/odm_dlkm/",
+    "/proc/", "/product/", "/sdcard/", "/storage/", "/sys/", "/system/",
+    "/system_dlkm/", "/system_ext/", "/vendor/", "/vendor_dlkm/",
+)
+
+
+def validate_symlink(name: str, target: str) -> None:
+    if target.startswith("/"):
+        resolved = posixpath.normpath(target)
+        if resolved == "/" or not resolved.startswith(ALLOWED_GUEST_ALIAS_ROOTS):
+            raise ValueError("absolute symlink escapes Android userspace: " + name)
+        return
+    resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
+    if resolved != ROOT and not resolved.startswith(ROOT + "/"):
+        raise ValueError("escaping symlink: " + name)
 
 
 def check_archive(path: Path) -> int:
@@ -43,12 +60,7 @@ def check_archive(path: Path) -> int:
                 raise ValueError("unsupported archive node: " + name)
             if member.issym():
                 symlinks.add(name)
-                target = member.linkname
-                if target.startswith("/"):
-                    raise ValueError("absolute symlink survived normalization: " + name)
-                resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))
-                if resolved != ROOT and not resolved.startswith(ROOT + "/"):
-                    raise ValueError("escaping symlink: " + name)
+                validate_symlink(name, member.linkname)
             if member.islnk() and member.linkname not in regular_files:
                 raise ValueError("invalid hardlink target: " + name)
             if member.isfile() or member.islnk():

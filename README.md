@@ -34,8 +34,10 @@ python3 producer/tools/build_rootfs.py \
 The producer verifies the input SHA-256 and AOSP tag, exports all four userspace
 partitions (including the complete system-as-root tree), and preserves numeric
 ownership, modes, modification times, hardlinks and extended attributes in the
-PAX archive. Absolute in-image symlinks become equivalent relative links inside
-the archive. No files or services are selected out. It writes:
+PAX archive. Symlink targets retain their original absolute or relative form;
+absolute targets are validated as guest paths without following host files.
+This also preserves references from APEX payloads after stock apexd mounts
+them at `/apex`. No files or services are selected out. It writes:
 
 - `android-aarch64-v0.1.0.tar.gz`
 - `SHA256SUMS`
@@ -87,11 +89,15 @@ Scarlet's explicit factory grants from commit
 [`7c96ed773`](https://github.com/petitstrawberry/Scarlet/commit/7c96ed773), which
 includes the whole-View mount preservation fix and the native factory API.
 The complete session archive has imported through the SDK and booted the normal
-four-core HVF desktop. A manual catalog launch reached Shield policy construction
-with its delegated View. The new factory grant completes that launch contract;
-its runtime verification and stock init/home startup remain pending. Configured
-launches require the exact command and capture startup errors in logd. The stock
-init lifecycle begins after an explicit catalog launch.
+four-core HVF desktop. A manual catalog launch received both capabilities,
+created the Shield policy, registered 81 boot file labels and started stock init
+in its own PID/mount namespace. The native Android window, SurfaceFlinger and
+graphics HAL processes were observed. Home and app display remain unverified.
+The last boot stopped at i18n APEX library resolution; the producer now preserves
+the absolute symlink targets needed after APEX mount relocation. Stock logd
+also did not remain running. Configured launches require the exact
+command and capture startup errors in the native logd. The stock init lifecycle
+begins after an explicit catalog launch.
 The full producer archive above contains stock AOSP only.
 
 ## Complete session archive

@@ -55,7 +55,8 @@ def add_member(archive: tarfile.TarFile, info: tarfile.TarInfo, data: bytes | No
         archive.addfile(info)
 
 
-def make_aosp_archive(path: Path, stock_hash: str) -> None:
+def make_aosp_archive(path: Path, stock_hash: str,
+                      apex_link: str = "/system/lib64/libbase.so") -> None:
     def info(name: str, kind: bytes, mode: int = 0o644, uid: int = 0, gid: int = 0,
              mtime: int = 1_700_000_000, linkname: str = "") -> tarfile.TarInfo:
         value = tarfile.TarInfo("android-aarch64" + (f"/{name}" if name else ""))
@@ -78,6 +79,16 @@ def make_aosp_archive(path: Path, stock_hash: str) -> None:
         etc_dir = info("system/etc", tarfile.DIRTYPE, 0o700, uid=1002, gid=2002, mtime=12)
         etc_dir.pax_headers["SCHILY.xattr.fixture.etc"] = "stock directory"
         add_member(archive, etc_dir)
+        add_member(archive, info("system/lib64", tarfile.DIRTYPE, 0o755))
+        add_member(archive, info("system/lib64/libbase.so", tarfile.REGTYPE, 0o755),
+                   b"stock libbase\n")
+        add_member(archive, info("system/apex", tarfile.DIRTYPE, 0o755))
+        add_member(archive, info("system/apex/com.android.i18n", tarfile.DIRTYPE, 0o755))
+        add_member(archive, info("system/apex/com.android.i18n/lib64", tarfile.DIRTYPE, 0o755))
+        add_member(archive, info(
+            "system/apex/com.android.i18n/lib64/libbase.so", tarfile.SYMTYPE, 0o777,
+            linkname=apex_link,
+        ))
         stock = info("system/etc/cgroups.json", tarfile.REGTYPE, 0o640, uid=1001, gid=2001, mtime=13)
         stock.pax_headers["SCHILY.xattr.security.selinux"] = "u:object_r:system_file:s0\0"
         add_member(archive, stock, b"stock cgroup contents\n")
@@ -114,7 +125,11 @@ def make_boot(root: Path, stock_hash: str) -> None:
         "source_scarlet_revision": "c" * 40,
         "source_records": {"stock-init.json": "d" * 64},
         "files": {name: sha(data) for name, data in files.items()},
-        "symlinks": {"system/bin/foo": "foo64", "system/new-alias.conf": "etc/new.conf"},
+        "symlinks": {
+            "system/bin/foo": "foo64",
+            "system/new-alias.conf": "etc/new.conf",
+            "system/apex/com.android.i18n/lib64/libbase.so": "/system/lib64/libbase.so",
+        },
         "directories": directories,
         "replacements": {"system/etc/cgroups.json": stock_hash},
         "port_replacements": {"system/etc/cgroups.json": {
@@ -213,6 +228,33 @@ class SessionArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(producer.InputError, "symlink loop"):
             producer.resolve_stock_alias("etc/init.rc", links, kinds)
 
+    def test_prepared_links_retain_absolute_and_relative_target_forms(self):
+        with tempfile.TemporaryDirectory(prefix="session-test-") as directory:
+            base = Path(directory)
+            fixture = self.fixture(base)
+            manifest = fixture["boot"] / "boot-profile.json"
+            document = json.loads(manifest.read_text())
+            document["symlinks"]["system/bin/foo"] = "./foo64"
+            manifest.write_text(json.dumps(document))
+
+            overlay = producer.verify_boot_inputs(fixture["boot"], None)
+            self.assertEqual(overlay.symlinks["system/bin/foo"], "./foo64")
+            self.assertEqual(
+                overlay.symlinks["system/apex/com.android.i18n/lib64/libbase.so"],
+                "/system/lib64/libbase.so",
+            )
+
+    def test_normalized_apex_alias_conflicts_with_absolute_boot_intent(self):
+        with tempfile.TemporaryDirectory(prefix="session-test-") as directory:
+            base = Path(directory)
+            fixture = self.fixture(base)
+            make_aosp_archive(
+                fixture["aosp"], fixture["stock_hash"],
+                apex_link="../../../lib64/libbase.so",
+            )
+            with self.assertRaisesRegex(producer.InputError, "boot symlink conflicts with AOSP"):
+                self.build(fixture, base / "conflict")
+
     def fixture(self, base: Path) -> dict[str, Path]:
         stock_hash = sha(b"stock cgroup contents\n")
         aosp = base / "aosp.tar.gz"
@@ -259,6 +301,15 @@ class SessionArchiveTests(unittest.TestCase):
                 etc = archive.getmember(f"{root}/systems/android-aarch64/etc")
                 self.assertTrue(etc.issym())
                 self.assertEqual(etc.linkname, "system/etc")
+                apex_alias = archive.getmember(
+                    f"{root}/systems/android-aarch64/system/apex/com.android.i18n/lib64/libbase.so")
+                self.assertTrue(apex_alias.issym())
+                self.assertEqual(apex_alias.linkname, "/system/lib64/libbase.so")
+                self.assertEqual(
+                    producer.guest_link_resolution(
+                        "apex/com.android.i18n/lib64/libbase.so", apex_alias.linkname),
+                    "/system/lib64/libbase.so",
+                )
                 self.assertFalse(any(name.startswith(f"{root}/systems/android-aarch64/etc/") for name in names))
                 root_copy = archive.getmember(f"{root}/systems/android-aarch64/system/etc/boot-input.conf")
                 self.assertEqual(archive.extractfile(root_copy).read(), b"configuration through stock alias\n")
