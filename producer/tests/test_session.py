@@ -20,6 +20,26 @@ def sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+DEFAULT_FILE_LABELS = (
+    "/etc/boot-input.conf",
+    "/system/bin/foo",
+    "/system/etc/cgroups.json",
+    "/system/etc/new.conf",
+    "/system/new-alias.conf",
+    "/vendor/lib64/hw/gralloc.scarlet.so",
+)
+
+
+def make_shield_policy(targets: tuple[str, ...] = DEFAULT_FILE_LABELS) -> bytes:
+    lines = [
+        "scarlet-android-boot-policy-v2",
+        "label 1 u:r:init:s0",
+        "label 2 u:object_r:system_file:s0",
+    ]
+    lines.extend(f"file-label 2 {target}" for target in targets)
+    return ("\n".join(lines) + "\n").encode()
+
+
 def write_bytes(path: Path, data: bytes, mode: int = 0o644) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
@@ -78,6 +98,7 @@ def make_boot(root: Path, stock_hash: str) -> None:
         "system/etc/cgroups.json": b"explicit current cgroups\n",
         "system/etc/new.conf": b"new entry below a stock directory\n",
         "scarlet/boot/init.d/system/readme.rc": b"service fixture /system/bin/foo64\n",
+        "scarlet/boot/shield.policy": make_shield_policy(),
         "scarlet/boot/service-policy.txt": b"service-policy-v1\n",
         "scarlet/lib/input-bridge.jar": b"PK\x03\x04fixture\n",
     }
@@ -93,7 +114,7 @@ def make_boot(root: Path, stock_hash: str) -> None:
         "source_scarlet_revision": "c" * 40,
         "source_records": {"stock-init.json": "d" * 64},
         "files": {name: sha(data) for name, data in files.items()},
-        "symlinks": {"system/bin/foo": "foo64"},
+        "symlinks": {"system/bin/foo": "foo64", "system/new-alias.conf": "etc/new.conf"},
         "directories": directories,
         "replacements": {"system/etc/cgroups.json": stock_hash},
         "port_replacements": {"system/etc/cgroups.json": {
@@ -290,6 +311,44 @@ class SessionArchiveTests(unittest.TestCase):
             manifest.write_text(json.dumps(document))
             with self.assertRaisesRegex(producer.InputError, "ASSEMBLED"):
                 producer.verify_boot_inputs(fixture["boot"], None)
+
+    def test_file_label_targets_must_exist_in_the_final_image(self):
+        missing_targets = ("/data/dalvik-cache", "/system/etc/absent.conf")
+        for target in missing_targets:
+            with self.subTest(target=target), \
+                    tempfile.TemporaryDirectory(prefix="session-test-") as directory:
+                base = Path(directory)
+                fixture = self.fixture(base)
+                policy = make_shield_policy(DEFAULT_FILE_LABELS + (target,))
+                write_bytes(fixture["boot"] / "scarlet/boot/shield.policy", policy)
+                manifest = fixture["boot"] / "boot-profile.json"
+                document = json.loads(manifest.read_text())
+                document["files"]["scarlet/boot/shield.policy"] = sha(policy)
+                manifest.write_text(json.dumps(document))
+
+                with self.assertRaises(producer.InputError) as raised:
+                    self.build(fixture, base / "missing")
+                self.assertIn("target is missing from the final Android image", str(raised.exception))
+                self.assertIn(target, str(raised.exception))
+
+    def test_file_labels_use_installed_policy_and_resolve_aliases(self):
+        with tempfile.TemporaryDirectory(prefix="session-test-") as directory:
+            base = Path(directory)
+            fixture = self.fixture(base)
+            archive_path = self.build(fixture, base / "aliases")
+            root = "android-session-aarch64/systems/android-aarch64"
+            policy_data = (fixture["boot"] / "scarlet/boot/shield.policy").read_bytes()
+            with tarfile.open(archive_path) as archive:
+                installed = archive.extractfile(
+                    f"{root}/scarlet/boot/shield.policy").read()
+                self.assertEqual(sha(installed), sha(policy_data))
+                for target in (
+                        "system/etc/boot-input.conf",
+                        "system/bin/foo64",
+                        "system/new-alias.conf",
+                        "system/etc/new.conf",
+                        "vendor/lib64/hw/gralloc.scarlet.so"):
+                    self.assertIn(f"{root}/{target}", archive.getnames())
 
     def test_path_aliases_autostart_and_conflicting_targets_are_rejected(self):
         with tempfile.TemporaryDirectory(prefix="session-test-") as directory:

@@ -50,7 +50,11 @@ MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 100_000
 MAX_TREE_ENTRIES = 50_000
 MAX_TREE_BYTES = 16 * 1024 * 1024 * 1024
+MAX_POLICY_BYTES = 1024 * 1024
+MAX_POLICY_LINE_CHARS = 8192
+MAX_FILE_LABELS = 4096
 COPY_CHUNK = 1024 * 1024
+FILE_LABEL_POLICY = "scarlet/boot/shield.policy"
 
 
 class InputError(ValueError):
@@ -488,6 +492,73 @@ def resolve_stock_alias(path: str, links: dict[str, str], kinds: dict[str, str],
     return "/".join(resolved)
 
 
+def verify_file_label_targets(
+        policy: HostFile, stock_kinds: dict[str, str], stock_links: dict[str, str],
+        overlay_files: dict[str, HostFile], overlay_symlinks: dict[str, str],
+        overlay_directories: set[str], graphics_files: dict[str, HostFile]) -> None:
+    """Require every installed policy file label to name an existing image path."""
+    require_regular(policy.source, "installed Shield policy")
+    with policy.source.open("rb") as stream:
+        data = stream.read(MAX_POLICY_BYTES + 1)
+    if len(data) > MAX_POLICY_BYTES:
+        raise InputError("installed Shield policy exceeds its size bound")
+    if hashlib.sha256(data).hexdigest() != policy.sha256:
+        raise InputError("installed Shield policy changed while preparing")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as error:
+        raise InputError("installed Shield policy is not UTF-8") from error
+
+    labels: list[tuple[str, str]] = []
+    for line_number, line in enumerate(text.splitlines(), 1):
+        fields = line.split()
+        if not fields or fields[0] != "file-label":
+            continue
+        if len(line) > MAX_POLICY_LINE_CHARS:
+            raise InputError(f"file-label line exceeds its bound: {line_number}")
+        if (len(fields) != 3 or re.fullmatch(r"[0-9]{1,10}", fields[1]) is None or
+                int(fields[1]) > 0xffffffff or not fields[2].startswith("/")):
+            raise InputError(f"malformed file-label in installed Shield policy: {line_number}")
+        target = fields[2]
+        if posixpath.normpath(target) != target or target == "/":
+            raise InputError(f"unsafe file-label target in installed Shield policy: {target}")
+        try:
+            relative_path(target[1:])
+        except InputError as error:
+            raise InputError(f"unsafe file-label target in installed Shield policy: {target}") from error
+        labels.append((fields[1], target))
+        if len(labels) > MAX_FILE_LABELS:
+            raise InputError("installed Shield policy exceeds its file-label bound")
+
+    final_kinds = dict(stock_kinds)
+    final_kinds.update({path: "file" for path in overlay_files})
+    final_kinds.update({path: "symlink" for path in overlay_symlinks})
+    final_kinds.update({path: "dir" for path in overlay_directories})
+    for path in graphics_files:
+        final_kinds[path] = "file"
+        parent = posixpath.dirname(path)
+        while parent:
+            final_kinds.setdefault(parent, "dir")
+            parent = posixpath.dirname(parent)
+    final_links = {**stock_links, **overlay_symlinks}
+
+    missing: list[tuple[str, str]] = []
+    for label, target in labels:
+        try:
+            resolved = resolve_stock_alias(target[1:], final_links, final_kinds)
+        except InputError as error:
+            raise InputError(f"cannot resolve file-label {label} {target}: {error}") from error
+        if resolved not in final_kinds:
+            missing.append((label, target))
+    if missing:
+        if len(missing) == 1:
+            label, target = missing[0]
+            raise InputError(f"file-label {label} target is missing from the final Android image: {target}")
+        rendered = ", ".join(target for _, target in missing[:3])
+        suffix = ", ..." if len(missing) > 3 else ""
+        raise InputError(f"final Android image is missing {len(missing)} file-label targets: {rendered}{suffix}")
+
+
 def validate_graphics(directory: Path, kind: str, expected_files: set[str]) -> ComponentTree:
     manifest, manifest_sha = read_json_limited(directory / "build.json", f"{kind} build manifest")
     if manifest.get("kind") != kind or manifest.get("result") != "BUILT":
@@ -701,6 +772,16 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
                 raise InputError(f"overlay target is below a boot symlink: {final}")
             overlay_directories.add(parent)
             parent = parent.rsplit("/", 1)[0] if "/" in parent else ""
+
+    policy_source = boot.files.get(FILE_LABEL_POLICY)
+    if policy_source is None:
+        raise InputError(f"prepared boot inputs lack {FILE_LABEL_POLICY}")
+    policy_target = resolve_stock_alias(FILE_LABEL_POLICY, stock_links, stock_kinds)
+    installed_policy = overlay_files.get(policy_target)
+    if installed_policy is None or installed_policy != policy_source:
+        raise InputError("final image does not install the verified prepared Shield policy")
+    verify_file_label_targets(installed_policy, stock_kinds, stock_links, overlay_files,
+                              overlay_symlinks, overlay_directories, graphics_files)
 
     app = validate_android_app(android_app)
     runtime = validate_runtime(android_runtime)
