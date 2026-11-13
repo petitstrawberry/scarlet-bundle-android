@@ -204,6 +204,12 @@ def make_native(base: Path) -> tuple[Path, Path, Path, Path, Path]:
 
 
 class SessionArchiveTests(unittest.TestCase):
+    def test_stock_partition_root_alias_is_preserved(self):
+        self.assertEqual(producer.normalize_existing_link("system/product", "/product"), "/product")
+        self.assertEqual(producer.normalize_guest_link("system/product", "/product"), "/product")
+        with self.assertRaisesRegex(producer.InputError, "escapes"):
+            producer.normalize_existing_link("system/product", "/product-other")
+
     def test_native_contract_requires_both_capabilities(self):
         with tempfile.TemporaryDirectory(prefix="session-test-") as directory:
             base = Path(directory)

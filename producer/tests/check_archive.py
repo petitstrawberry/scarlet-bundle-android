@@ -20,7 +20,8 @@ ALLOWED_GUEST_ALIAS_ROOTS = (
 def validate_symlink(name: str, target: str) -> None:
     if target.startswith("/"):
         resolved = posixpath.normpath(target)
-        if resolved == "/" or not resolved.startswith(ALLOWED_GUEST_ALIAS_ROOTS):
+        if not any(resolved == root.rstrip("/") or resolved.startswith(root)
+                   for root in ALLOWED_GUEST_ALIAS_ROOTS):
             raise ValueError("absolute symlink escapes Android userspace: " + name)
         return
     resolved = posixpath.normpath(posixpath.join(posixpath.dirname(name), target))

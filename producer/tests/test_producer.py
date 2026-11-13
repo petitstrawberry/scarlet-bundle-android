@@ -26,6 +26,14 @@ class SymlinkMetadataTests(unittest.TestCase):
     def test_non_apex_absolute_alias_is_preserved(self):
         self.assertEqual(producer.normalize_link("init", "/system/bin/app"), "/system/bin/app")
 
+    def test_stock_partition_root_alias_is_preserved(self):
+        self.assertEqual(producer.normalize_link("system/product", "/product"), "/product")
+        check_archive.validate_symlink("android-aarch64/system/product", "/product")
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            producer.normalize_link("system/product", "/product-other")
+        with self.assertRaisesRegex(ValueError, "escapes"):
+            check_archive.validate_symlink("android-aarch64/system/product", "/product-other")
+
     def test_absolute_alias_must_stay_in_guest_userspace(self):
         with self.assertRaisesRegex(ValueError, "escapes the Android userspace"):
             producer.normalize_link(

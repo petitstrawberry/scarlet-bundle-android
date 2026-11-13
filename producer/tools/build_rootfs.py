@@ -177,7 +177,8 @@ def guest_link_resolution(link_name: str, target: str) -> str:
         resolved = posixpath.normpath(target)
     else:
         resolved = posixpath.normpath(posixpath.join("/", posixpath.dirname(link_name), target))
-    if resolved == "/" or not resolved.startswith(ALLOWED_GUEST_ALIAS_ROOTS):
+    if not any(resolved == root.rstrip("/") or resolved.startswith(root)
+               for root in ALLOWED_GUEST_ALIAS_ROOTS):
         raise ValueError("guest symlink escapes the Android userspace: " + link_name)
     return resolved
 
