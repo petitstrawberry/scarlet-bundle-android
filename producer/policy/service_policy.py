@@ -23,6 +23,19 @@ SDK_POLICY_SHA256 = "2be08e2a2e93d22c6a1c5e4e32fa4d571ecb07695877cdcfe0c3a9f48ba
 SDK_POLICY_VERSION = 30
 MAX_NATIVE_LABELS = 2048
 
+FILE_KINDS = {
+    "file": 1,
+    "dir": 2,
+    "lnk_file": 3,
+    "chr_file": 4,
+    "blk_file": 5,
+    "sock_file": 6,
+    "fifo_file": 7,
+}
+FILE_RELABEL_EVIDENCE = re.compile(
+    r"^allow (init|installd) ([A-Za-z0-9_]+):"
+    r"(file|dir|lnk_file|chr_file|blk_file|sock_file|fifo_file) "
+    r"(?:\{ ([a-z_ ]+) \}|([a-z_]+));$")
 
 
 def policy_version(metadata):
@@ -135,6 +148,64 @@ def _digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def relabel_policy(manifest):
+    """Return compact relabel matrices and non-compact exact fallbacks.
+
+    Each evidence record is a concrete source/target/class allow. The
+    relabelfrom values form origins and the relabelto values form destinations;
+    SELinux evaluates those independently, so their cross product is the exact
+    policy decision represented by the verified compiled policy. Exported
+    destinations whose evidence remains an attribute, such as property_type,
+    retain their exact exported pairs because the evidence does not enumerate
+    that attribute's concrete members.
+    """
+    matrices = {}
+    for line in manifest.get("file_relabel_evidence", []):
+        match = FILE_RELABEL_EVIDENCE.fullmatch(line)
+        if not match:
+            raise ValueError("generic init relabel evidence")
+        source, name, file_class, grouped, single = match.groups()
+        permissions = set((grouped or single).split())
+        key = (f"u:r:{source}:s0", FILE_KINDS[file_class])
+        matrices.setdefault(key, {}).setdefault(name, set()).update(permissions)
+
+    declared = {}
+    exact_origins = {}
+    for rule in manifest.get("file_relabels", []):
+        if not isinstance(rule, list) or len(rule) != 4:
+            raise ValueError("generic init file relabel")
+        source, origin, target, kind = rule
+        key = (source, kind)
+        declared.setdefault(key, set()).add(target)
+        exact_origins.setdefault(key, set()).add(origin)
+
+    selected_names = {label.split(":")[2] for targets in declared.values() for label in targets}
+    groups = {}
+    for key, all_targets in declared.items():
+        types = matrices.get(key, {})
+        for origin in exact_origins[key]:
+            name = origin.split(":")[2]
+            if "relabelfrom" not in types.get(name, set()):
+                raise ValueError("generic init file relabel lacks origin evidence")
+        origins = {
+            f"u:object_r:{name}:s0" for name, permissions in types.items()
+            if "relabelfrom" in permissions and
+            (name in selected_names or f"u:object_r:{name}:s0" in exact_origins[key])
+        }
+        targets = {label for label in all_targets
+                   if label.split(":")[2] in types and "relabelto" in types[label.split(":")[2]]}
+        if not origins or not targets:
+            continue
+        groups[key] = (tuple(sorted(origins)), tuple(sorted(targets)))
+
+    exact = []
+    for rule in manifest.get("file_relabels", []):
+        group = groups.get((rule[0], rule[3]))
+        if group is None or rule[2] not in group[1]:
+            exact.append(rule)
+    return groups, exact
+
+
 def validate_generic(manifest):
     """Validate a byte-bound exported selection before adding native records."""
     value = dict(manifest)
@@ -214,12 +285,14 @@ def validate_generic(manifest):
         raise ValueError("generic init relabel evidence")
     for rule in relabels:
         if (not isinstance(rule, list) or len(rule) != 4 or
-                rule[0] not in ("u:r:init:s0", "u:r:installd:s0") or rule[1] != "u:object_r:unlabeled:s0" or
+                rule[0] not in ("u:r:init:s0", "u:r:installd:s0") or
+                not isinstance(rule[1], str) or not re.fullmatch(r"u:object_r:[A-Za-z0-9_]+:s0", rule[1]) or
                 not isinstance(rule[2], str) or not re.fullmatch(r"u:object_r:[A-Za-z0-9_]+:s0", rule[2]) or
                 rule[2] == rule[1] or type(rule[3]) is not int or not 1 <= rule[3] <= 7):
             raise ValueError("generic init file relabel")
     if len({tuple(rule) for rule in relabels}) != len(relabels):
         raise ValueError("duplicate generic init file relabel")
+    relabel_policy(value)
     creates=value.get("file_create_groups",[])
     evidence=value.get("file_create_evidence",[])
     if (not isinstance(creates,list) or len(creates)>42 or not isinstance(evidence,list) or len(evidence)>16384 or
@@ -250,6 +323,7 @@ def apply_generic_boot_policy(boot, manifest, root=None):
     service access are separate; sockets follow selected service declarations.
     """
     validate_generic(manifest)
+    generic_relabels, exact_relabels = relabel_policy(manifest)
     if root is not None:
         from .inputs import sha256
         root = Path(root)
@@ -292,6 +366,16 @@ def apply_generic_boot_policy(boot, manifest, root=None):
             ids.add(labels[label])
             added.append(f"label {labels[label]} {label}")
         return labels[label]
+    def group_id(names):
+        members={identifier(name) for name in names}
+        for group in sorted(label_sets):
+            if set_members.get(group,set())==members:return group
+        group=max(label_sets,default=0)+1
+        if group>0xffffffff:raise ValueError("native label set identity exhaustion")
+        label_sets.add(group);set_members[group]=members
+        added.append(f"label-set {group}")
+        added.extend(f"set-member {group} {member}" for member in sorted(members))
+        return group
     for path, label in sorted(manifest["file_labels"].items()):
         number = identifier(label)
         if path in files and files[path] != number:
@@ -319,23 +403,18 @@ def apply_generic_boot_policy(boot, manifest, root=None):
             sockets.add(rule)
     if manifest.get("file_relabels") and file_default != labels.get("u:object_r:unlabeled:s0"):
         raise ValueError("init label restoration requires the matching native file default")
-    for source, origin, target, kind in manifest.get("file_relabels", []):
+    for source, origin, target, kind in exact_relabels:
         rule = (identifier(source), identifier(origin), identifier(target), kind)
         if rule not in relabels:
             added.append("file-relabel " + " ".join(map(str, rule)))
             relabels.add(rule)
+    for (source, kind), (origins, targets) in sorted(generic_relabels.items()):
+        rule = (identifier(source), group_id(origins), group_id(targets), kind, 2, 1)
+        if rule not in set_rules:
+            added.append("file-set " + " ".join(map(str, rule)))
+            set_rules.add(rule)
     if manifest.get("file_create_groups") and file_default is None:
         raise ValueError("file creation groups require a native file default")
-    def group_id(names):
-        members={identifier(name) for name in names}
-        for group in sorted(label_sets):
-            if set_members.get(group,set())==members:return group
-        group=max(label_sets,default=0)+1
-        if group>0xffffffff:raise ValueError("native label set identity exhaustion")
-        label_sets.add(group);set_members[group]=members
-        added.append(f"label-set {group}")
-        added.extend(f"set-member {group} {member}" for member in sorted(members))
-        return group
     for group in manifest.get("file_create_groups",[]):
         rule=(identifier(group["source"]),group_id(group["parents"]),group_id(group["targets"]),group["kind"],1,0)
         if rule not in set_rules:
