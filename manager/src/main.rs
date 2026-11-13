@@ -31,8 +31,12 @@ fn wait_for_program(pid: i32) -> Result<i32, &'static str> {
 struct Session {
     scope: ProcessScope,
     init: i32,
+    reaper_selected: bool,
+    terminated: bool,
     reaped: bool,
+    children_drained: bool,
     closed: bool,
+    failure: Option<&'static str>,
 }
 
 impl Session {
@@ -40,27 +44,52 @@ impl Session {
         if self.closed {
             return Ok(());
         }
-        self.scope
-            .set_reaper(0)
-            .map_err(|_| "Android scope reaper")?;
-        let mut delivered = false;
+        if let Some(failure) = self.failure {
+            return Err(failure);
+        }
+        let result = self.finish_inner();
+        if let Err(failure) = result {
+            self.failure = Some(failure);
+        }
+        result
+    }
+
+    fn finish_inner(&mut self) -> Result<(), &'static str> {
+        if !self.reaper_selected {
+            self.scope
+                .set_reaper(0)
+                .map_err(|_| "Android scope reaper")?;
+            self.reaper_selected = true;
+        }
         for _ in 0..100 {
-            if !delivered {
-                delivered = self.scope.terminate().is_ok();
+            if !self.terminated {
+                self.terminated = self.scope.terminate().is_ok();
             }
             // Native window/bridge children are stopped before this call. The
             // remaining children are init and adopted members of this scope.
+            self.children_drained = false;
             for _ in 0..1024 {
                 let (pid, _) = std::task::waitpid(-1, std::task::WAIT_NOHANG);
-                if pid <= 0 {
+                if pid == 0 {
+                    self.children_drained = true;
                     break;
+                }
+                if pid < 0 {
+                    return Err("Android child drain failed");
                 }
                 if pid == self.init {
                     self.reaped = true;
                 }
             }
             let status = self.scope.status().map_err(|_| "Android scope status")?;
-            if delivered && self.reaped && status.live == 0 && status.members == 0 {
+            // `members` also counts terminal Tasks awaiting the independent
+            // kernel task reaper. Once every member is non-live and waitpid has
+            // found no remaining child status, scope teardown is complete.
+            if self.terminated
+                && self.reaped
+                && self.children_drained
+                && status.live == 0
+            {
                 self.closed = true;
                 return Ok(());
             }
@@ -72,6 +101,9 @@ impl Session {
 
 impl Drop for Session {
     fn drop(&mut self) {
+        if self.closed || self.failure.is_some() {
+            return;
+        }
         if let Err(error) = self.finish() {
             println!("android: {}", error);
         }
@@ -189,8 +221,12 @@ fn run(stdio: &[Handle]) -> Result<i32, &'static str> {
     let mut session = Session {
         scope,
         init: pid,
+        reaper_selected: false,
+        terminated: false,
         reaped: false,
+        children_drained: false,
         closed: false,
+        failure: None,
     };
     let worker = app_policy::start(policy, &android)?;
     let mut display = display.start(&environment, &handles)?;
