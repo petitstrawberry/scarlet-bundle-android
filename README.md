@@ -12,8 +12,9 @@ Scarlet consumes a verified release archive through a normal `bundle.toml`
 The current producer exports the AOSP Android 13 ARM64 emulator image with tag
 `default`. Google APIs and Play Store images are rejected. The native display,
 input and network adapters are under `runtime/`; the native session manager is
-under `manager/`. The graphics HAL and image configuration still use the Scarlet
-development inputs. No binary release has been published:
+under `manager/`, and the graphics HAL and stock adapters are under `graphics/`.
+The prepared boot profile still comes from the Scarlet development inputs.
+No binary release has been published:
 the exact corresponding-source record for SDK build 10940250 is still missing.
 
 ## Build
@@ -84,8 +85,38 @@ catalog entry launches the manager with its View, rejects a changed command,
 and captures startup errors in logd. Direct invocation without a delegated View
 is rejected. This test used a desktop without the Android root; a complete
 Android session through the new manager remains unverified. The full producer
-archive does not yet contain the required Scarlet Android boot profile and
-adapters.
+archive above contains stock AOSP only.
+
+## Complete session archive
+
+`producer/tools/build_session.py` combines the full stock archive with a prepared
+boot profile, the native app, frontend and graphics outputs. It verifies the
+input manifests and file hashes, preserves stock metadata and symlink aliases,
+and records each explicit stock-file replacement in the session lock. Prepared
+inputs must include the assembled stock-init configuration. Autostart hooks are
+rejected.
+
+Build the app with `cargo-scarlet app build --source manager/app.toml`, build the
+frontend above and the [graphics outputs](graphics/README.md), then run:
+
+```sh
+python3 producer/tools/build_session.py \
+  --aosp-archive producer/artifacts/android-aarch64-v0.1.0.tar.gz \
+  --boot-inputs /path/to/prepared-boot-inputs \
+  --android-app /path/to/android.app \
+  --android-runtime /path/to/android-runtime \
+  --graphics-hal /path/to/hal \
+  --graphics-adapters /path/to/adapters \
+  --version v0.1.0 --output producer/artifacts/session
+```
+
+The generated `bundle.toml` has one hash-pinned archive layer containing
+`/applications/android.app`, `/bin/android-runtime`, the stemd grant and the
+complete `/systems/android-aarch64` tree. Add that manifest as a normal `bundle`
+layer in the Scarlet root image. Local builds use an absolute `file://` URL;
+`--archive-url` selects the eventual release URL without changing archive bytes.
+Existing outputs are never overwritten. The session lock records all input
+hashes and original/installed hashes for device-profile replacements.
 
 ## Licensing
 
