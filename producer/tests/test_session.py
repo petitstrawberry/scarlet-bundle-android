@@ -56,7 +56,8 @@ def add_member(archive: tarfile.TarFile, info: tarfile.TarInfo, data: bytes | No
 
 
 def make_aosp_archive(path: Path, stock_hash: str,
-                      apex_link: str = "/system/lib64/libbase.so") -> None:
+                      apex_link: str = "/system/lib64/libbase.so",
+                      extra_members: tuple[tuple[tarfile.TarInfo, bytes | None], ...] = ()) -> None:
     def info(name: str, kind: bytes, mode: int = 0o644, uid: int = 0, gid: int = 0,
              mtime: int = 1_700_000_000, linkname: str = "") -> tarfile.TarInfo:
         value = tarfile.TarInfo("android-aarch64" + (f"/{name}" if name else ""))
@@ -100,6 +101,8 @@ def make_aosp_archive(path: Path, stock_hash: str,
                                  linkname="android-aarch64/system/bin/foo64"))
         add_member(archive, info("untouched", tarfile.REGTYPE, 0o444, uid=123, gid=456), b"untouched\n")
         add_member(archive, info("provenance.json", tarfile.REGTYPE), provenance)
+        for extra_info, data in extra_members:
+            add_member(archive, extra_info, data)
     assert stock_hash == sha(b"stock cgroup contents\n")
 
 
@@ -203,6 +206,69 @@ def make_native(base: Path) -> tuple[Path, Path, Path, Path, Path]:
     return app, runtime, hal, adapters, manager
 
 
+COMPOSER_CONTRACT = "android.hardware.graphics.composer@2.1::IComposer/default"
+KEYMINT_CONTRACT = "android.hardware.security.keymint.IKeyMintDevice/default"
+PREPARED_DEVICE = b'''<manifest version="5.0" type="device">
+  <hal format="hidl">
+    <name>android.hardware.graphics.composer</name>
+    <transport>hwbinder</transport>
+    <fqname>@2.1::IComposer/default</fqname>
+  </hal>
+  <hal format="aidl">
+    <name>android.hardware.security.keymint</name>
+    <version>2</version>
+    <fqname>IKeyMintDevice/default</fqname>
+  </hal>
+</manifest>
+'''
+STOCK_POWER = b'''<manifest version="1.0" type="device">
+  <hal format="aidl">
+    <name>android.hardware.power</name><version>3</version>
+    <fqname>IPower/default</fqname>
+  </hal>
+</manifest>
+'''
+STOCK_COMPOSER = b'''<manifest version="1.0" type="device">
+  <hal format="hidl">
+    <name>android.hardware.graphics.composer</name><transport>hwbinder</transport>
+    <version>2.4</version>
+    <interface><name>IComposer</name><instance>default</instance></interface>
+  </hal>
+</manifest>
+'''
+POWER_FRAGMENT = "vendor/etc/vintf/manifest/power-default.xml"
+COMPOSER_FRAGMENT = "vendor/etc/vintf/manifest/android.hardware.graphics.composer@2.4.xml"
+ODM_FRAGMENT = "odm/etc/vintf/manifest/power.xml"
+FRAMEWORK_FRAGMENT = "system/etc/vintf/manifest/framework.xml"
+APEX_FRAGMENT = "system/apex/com.android.i18n/etc/vintf/manifest/device.xml"
+
+
+def vintf_member(path: str, data: bytes | None, kind: bytes = tarfile.REGTYPE,
+                 linkname: str = "") -> tuple[tarfile.TarInfo, bytes | None]:
+    info = tarfile.TarInfo(f"{producer.AOSP_ROOT}/{path}")
+    info.type, info.uid, info.gid, info.mode, info.mtime = kind, 1007, 2007, 0o640, 1234
+    info.linkname = linkname
+    info.pax_headers = {"SCHILY.xattr.security.selinux": "u:object_r:vendor_configs_file:s0\0",
+                        "SCHILY.xattr.fixture.vintf": "original metadata", "path": info.name}
+    if data is not None:
+        info.pax_headers["size"] = str(len(data))
+    if linkname:
+        info.pax_headers["linkpath"] = linkname
+    return info, data
+
+
+def prepared_file(boot: Path, name: str, data: bytes) -> None:
+    write_bytes(boot / name, data)
+    manifest = boot / "boot-profile.json"
+    document = json.loads(manifest.read_text())
+    document["files"][name] = sha(data)
+    document["directories"] = sorted(path.relative_to(boot).as_posix()
+                                     for path in boot.rglob("*") if path.is_dir())
+    if name in document.get("port_replacements", {}):
+        document["port_replacements"][name]["sha256"] = sha(data)
+    manifest.write_text(json.dumps(document))
+
+
 class SessionArchiveTests(unittest.TestCase):
     def test_stock_partition_root_alias_is_preserved(self):
         self.assertEqual(producer.normalize_existing_link("system/product", "/product"), "/product")
@@ -279,6 +345,247 @@ class SessionArchiveTests(unittest.TestCase):
             graphics_hal=fixture["hal"], graphics_adapters=fixture["adapters"],
             manager_fs=fixture["manager"], version="v1.2.3", output=output,
         )
+
+    def prepare(self, fixture: dict[str, Path]) -> producer.SessionPlan:
+        return producer.prepare_session(
+            aosp_archive=fixture["aosp"], boot_inputs=fixture["boot"], boot_manifest=None,
+            android_app=fixture["app"], android_runtime=fixture["runtime"],
+            graphics_hal=fixture["hal"], graphics_adapters=fixture["adapters"],
+            manager_fs=fixture["manager"],
+        )
+
+    def vintf_fixture(self, base: Path, *, fragments=None, extra=()) -> dict[str, Path]:
+        fixture = self.fixture(base)
+        if fragments is None:
+            fragments = (vintf_member(POWER_FRAGMENT, STOCK_POWER),
+                         vintf_member(COMPOSER_FRAGMENT, STOCK_COMPOSER),
+                         vintf_member(ODM_FRAGMENT, STOCK_POWER))
+        directories = []
+        for name in sorted(producer.DEVICE_VINTF_DIRECTORIES, key=lambda path: (path.count("/"), path)):
+            entry, _ = vintf_member(name, None, tarfile.DIRTYPE)
+            entry.mode = 0o750
+            directories.append((entry, None))
+        make_aosp_archive(fixture["aosp"], fixture["stock_hash"], extra_members=tuple(directories) + (
+            vintf_member(producer.DEVICE_MANIFEST, STOCK_COMPOSER),
+            vintf_member(FRAMEWORK_FRAGMENT, STOCK_POWER.replace(b'type="device"', b'type="framework"')),
+            vintf_member(APEX_FRAGMENT, STOCK_POWER),
+            vintf_member("vendor/bin/hw/power-service", b"stock power HAL payload\n"),
+        ) + tuple(fragments) + tuple(extra))
+        prepared_file(fixture["boot"], producer.DEVICE_MANIFEST, PREPARED_DEVICE)
+        manifest = fixture["boot"] / "boot-profile.json"
+        document = json.loads(manifest.read_text())
+        document["profile"]["vintf"] = {"device": [COMPOSER_CONTRACT, KEYMINT_CONTRACT], "framework": []}
+        document["replacements"][producer.DEVICE_MANIFEST] = sha(STOCK_COMPOSER)
+        document["port_replacements"][producer.DEVICE_MANIFEST] = {
+            "reason": "explicit profile aggregate", "sha256": sha(PREPARED_DEVICE),
+            "source_sha256": sha(STOCK_COMPOSER),
+        }
+        manifest.write_text(json.dumps(document))
+        return fixture
+
+    def test_explicit_device_selection_neutralizes_stock_fragments_and_pins_evidence(self):
+        with tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+            base = Path(directory)
+            fixture = self.vintf_fixture(base)
+            original_archive = sha(fixture["aosp"].read_bytes())
+            prepared_snapshot = {path.relative_to(fixture["boot"]): path.read_bytes()
+                                 for path in fixture["boot"].rglob("*") if path.is_file()}
+            plan = self.prepare(fixture)
+            expected = {POWER_FRAGMENT, COMPOSER_FRAGMENT, ODM_FRAGMENT}
+            self.assertEqual(set(plan.generated_files), expected)
+            self.assertTrue(all(data == producer.EMPTY_DEVICE_MANIFEST
+                                for data in plan.generated_files.values()))
+            installed_path = self.build(fixture, base / "selected")
+            root = f"{producer.OUTER_ROOT}/{producer.ANDROID_ROOT}"
+            with tarfile.open(fixture["aosp"]) as stock, tarfile.open(installed_path) as installed:
+                paths = installed.getnames()
+                self.assertEqual(len(paths), len(set(paths)))
+                for member in stock:
+                    relative = member.name.removeprefix(producer.AOSP_ROOT).lstrip("/")
+                    target = root + ("/" + relative if relative else "")
+                    self.assertIn(target, paths)
+                    if relative not in expected:
+                        continue
+                    result = installed.getmember(target)
+                    self.assertEqual(installed.extractfile(result).read(), producer.EMPTY_DEVICE_MANIFEST)
+                    self.assertEqual((result.uid, result.gid, result.mode, result.mtime),
+                                     (member.uid, member.gid, member.mode, member.mtime))
+                    for key, value in member.pax_headers.items():
+                        if key.startswith("SCHILY.xattr."):
+                            self.assertEqual(result.pax_headers[key], value)
+                self.assertEqual(installed.extractfile(f"{root}/{producer.DEVICE_MANIFEST}").read(),
+                                 PREPARED_DEVICE)
+                for path in (FRAMEWORK_FRAGMENT, APEX_FRAGMENT, "vendor/bin/hw/power-service"):
+                    self.assertEqual(installed.extractfile(f"{root}/{path}").read(),
+                                     stock.extractfile(f"{producer.AOSP_ROOT}/{path}").read())
+            lock = json.loads((base / "selected/android-session-aarch64-v1.2.3.lock.json").read_text())
+            boot_lock = lock["inputs"]["boot"]
+            evidence = boot_lock["device_vintf_selection"]
+            self.assertEqual(evidence["aggregate"], producer.DEVICE_MANIFEST)
+            self.assertEqual(evidence["aggregate_sha256"], sha(PREPARED_DEVICE))
+            self.assertEqual(evidence["selection"], [COMPOSER_CONTRACT, KEYMINT_CONTRACT])
+            self.assertEqual(evidence["contracts"][COMPOSER_CONTRACT]["version"], "2.1")
+            self.assertEqual(evidence["contracts"][KEYMINT_CONTRACT]["version"], "2")
+            self.assertEqual(evidence["fragment_roots"], list(producer.DEVICE_FRAGMENT_ROOTS))
+            for path in expected:
+                override = boot_lock["stock_content_overrides"][path]
+                original = STOCK_COMPOSER if path == COMPOSER_FRAGMENT else STOCK_POWER
+                self.assertEqual(override["aosp_sha256"], sha(original))
+                self.assertEqual(override["installed_sha256"], sha(producer.EMPTY_DEVICE_MANIFEST))
+                self.assertEqual(override["selection_sha256"], evidence["selection_sha256"])
+                self.assertIn("profile.vintf.device", override["reason"])
+            self.assertNotIn(FRAMEWORK_FRAGMENT, boot_lock["stock_content_overrides"])
+            self.assertNotIn(APEX_FRAGMENT, boot_lock["stock_content_overrides"])
+            self.assertEqual(sha(fixture["aosp"].read_bytes()), original_archive)
+            self.assertEqual({path.relative_to(fixture["boot"]): path.read_bytes()
+                              for path in fixture["boot"].rglob("*") if path.is_file()}, prepared_snapshot)
+
+    def test_no_explicit_device_selection_leaves_fragments_unchanged(self):
+        with tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+            base = Path(directory)
+            fixture = self.vintf_fixture(base)
+            manifest = fixture["boot"] / "boot-profile.json"
+            document = json.loads(manifest.read_text())
+            document["profile"].pop("vintf")
+            manifest.write_text(json.dumps(document))
+            plan = self.prepare(fixture)
+            self.assertEqual(plan.generated_files, {})
+            self.assertNotIn("device_vintf_selection", plan.lock_inputs["boot"])
+            output = base / "unchanged.tar.gz"
+            producer.write_archive(plan, output)
+            with tarfile.open(output) as archive:
+                for path, data in ((POWER_FRAGMENT, STOCK_POWER), (COMPOSER_FRAGMENT, STOCK_COMPOSER)):
+                    self.assertEqual(archive.extractfile(
+                        f"{producer.OUTER_ROOT}/{producer.ANDROID_ROOT}/{path}").read(), data)
+
+    def test_device_aggregate_checks_formats_versions_interfaces_and_transport(self):
+        changes = {
+            "wrong-hidl-version": PREPARED_DEVICE.replace(b"@2.1::", b"@2.4::"),
+            "wrong-aidl-version": PREPARED_DEVICE.replace(b"<version>2</version>", b"<version>1</version>"),
+            "wrong-interface": PREPARED_DEVICE.replace(b"IComposer", b"IUnprovided"),
+            "wrong-format": PREPARED_DEVICE.replace(b'format="hidl"', b'format="aidl"'),
+            "wrong-transport": PREPARED_DEVICE.replace(b"<transport>hwbinder</transport>",
+                                                       b'<transport arch="64">passthrough</transport>'),
+            "extra-declaration": PREPARED_DEVICE.replace(b"</manifest>",
+                STOCK_POWER.split(b">", 1)[1]),
+            "duplicate-declaration": PREPARED_DEVICE.replace(b"</manifest>",
+                PREPARED_DEVICE.split(b">", 1)[1]),
+            "override": PREPARED_DEVICE.replace(b'<hal format="hidl">', b'<hal format="hidl" override="true">'),
+            "wrong-root-kind": PREPARED_DEVICE.replace(b"manifest", b"compatibility-matrix"),
+            "wrong-root-type": PREPARED_DEVICE.replace(b'type="device"', b'type="framework"'),
+            "malformed-xml": PREPARED_DEVICE[:-10],
+            "oversize": b" " * (producer.MAX_VINTF_BYTES + 1),
+            "entity": b'<!DOCTYPE manifest [<!ENTITY x "x">]>' + PREPARED_DEVICE,
+        }
+        for name, data in changes.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+                fixture = self.vintf_fixture(Path(directory))
+                prepared_file(fixture["boot"], producer.DEVICE_MANIFEST, data)
+                with self.assertRaises(producer.InputError):
+                    self.prepare(fixture)
+        with tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+            fixture = self.vintf_fixture(Path(directory))
+            data = PREPARED_DEVICE.replace(b"<fqname>@2.1::IComposer/default</fqname>",
+                b"<version>2.1</version><interface><name>IComposer</name><instance>default</instance></interface>")
+            prepared_file(fixture["boot"], producer.DEVICE_MANIFEST, data)
+            plan = self.prepare(fixture)
+            self.assertEqual(plan.lock_inputs["boot"]["device_vintf_selection"]["aggregate_sha256"], sha(data))
+
+    def test_device_fragments_reject_malformed_ambiguous_and_overlarge_inputs(self):
+        cases = {
+            "framework-type": (vintf_member(POWER_FRAGMENT, STOCK_POWER.replace(b'type="device"', b'type="framework"')),),
+            "wrong-kind": (vintf_member(POWER_FRAGMENT, STOCK_POWER.replace(b"manifest", b"compatibility-matrix")),),
+            "malformed": (vintf_member(POWER_FRAGMENT, b"<manifest>"),),
+            "oversize": (vintf_member(POWER_FRAGMENT, b" " * (producer.MAX_VINTF_BYTES + 1)),),
+            "symlink": (vintf_member(POWER_FRAGMENT, None, tarfile.SYMTYPE,
+                                      "/system/etc/vintf/manifest/framework.xml"),),
+            "directory": (vintf_member(POWER_FRAGMENT, None, tarfile.DIRTYPE),),
+            "non-xml": (vintf_member(POWER_FRAGMENT + ".bak", STOCK_POWER),),
+            "nested": (vintf_member("vendor/etc/vintf/manifest/nested/power.xml", STOCK_POWER),),
+            "other-aggregate": (vintf_member("odm/etc/vintf/manifest.xml", STOCK_POWER),),
+            "too-many": tuple(vintf_member(f"vendor/etc/vintf/manifest/power-{i}.xml", STOCK_POWER)
+                              for i in range(producer.MAX_VINTF_FRAGMENTS + 1)),
+        }
+        for name, fragments in cases.items():
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+                fixture = self.vintf_fixture(Path(directory), fragments=fragments)
+                with self.assertRaises(producer.InputError):
+                    self.prepare(fixture)
+
+    def test_prepared_fragment_and_aggregate_aliases_are_rejected(self):
+        for name in (POWER_FRAGMENT, ODM_FRAGMENT, "odm/etc/vintf/manifest.xml"):
+            with self.subTest(path=name), tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+                fixture = self.vintf_fixture(Path(directory))
+                prepared_file(fixture["boot"], name, STOCK_POWER)
+                with self.assertRaisesRegex(producer.InputError, "conflicts with aggregate selection"):
+                    self.prepare(fixture)
+        with tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+            base = Path(directory)
+            fixture = self.vintf_fixture(base)
+            aggregate = fixture["boot"] / producer.DEVICE_MANIFEST
+            outside = write_bytes(base / "outside.xml", PREPARED_DEVICE)
+            aggregate.unlink()
+            aggregate.symlink_to(outside)
+            with self.assertRaisesRegex(producer.InputError, "host symlink"):
+                self.prepare(fixture)
+        with tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+            fixture = self.vintf_fixture(Path(directory))
+            # An identical manifest reached through a stock alias is still not
+            # the controlled aggregate root required by the selection.
+            make_aosp_archive(fixture["aosp"], fixture["stock_hash"], extra_members=(
+                vintf_member(producer.DEVICE_MANIFEST, None, tarfile.SYMTYPE,
+                             "/system/etc/vintf/manifest/framework.xml"),
+                vintf_member(FRAMEWORK_FRAGMENT, STOCK_COMPOSER),
+            ))
+            with self.assertRaisesRegex(producer.InputError, "aggregate is not a regular file"):
+                self.prepare(fixture)
+
+    def test_fragment_hardlinks_preserve_links_and_reject_selection_crossings(self):
+        link = "vendor/etc/vintf/manifest/power-alias.xml"
+        with tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+            base = Path(directory)
+            fixture = self.vintf_fixture(base, fragments=(
+                vintf_member(POWER_FRAGMENT, STOCK_POWER),
+                vintf_member(link, None, tarfile.LNKTYPE, f"{producer.AOSP_ROOT}/{POWER_FRAGMENT}"),
+            ))
+            plan = self.prepare(fixture)
+            output = base / "hardlinks.tar.gz"
+            producer.write_archive(plan, output)
+            root = f"{producer.OUTER_ROOT}/{producer.ANDROID_ROOT}"
+            with tarfile.open(output) as archive:
+                member = archive.getmember(f"{root}/{link}")
+                self.assertTrue(member.islnk())
+                self.assertEqual(member.linkname, f"{root}/{POWER_FRAGMENT}")
+                self.assertEqual(archive.extractfile(member).read(), producer.EMPTY_DEVICE_MANIFEST)
+                self.assertEqual((member.uid, member.gid, member.mode), (1007, 2007, 0o640))
+                self.assertEqual(member.pax_headers["SCHILY.xattr.fixture.vintf"], "original metadata")
+            override = plan.lock_inputs["boot"]["stock_content_overrides"][link]
+            self.assertEqual(override["aosp_sha256"], sha(STOCK_POWER))
+            self.assertEqual(override["installed_sha256"], sha(producer.EMPTY_DEVICE_MANIFEST))
+        for reverse in (False, True):
+            with self.subTest(reverse=reverse), tempfile.TemporaryDirectory(prefix="session-vintf-") as directory:
+                outside = "vendor/etc/power-copy.xml"
+                source, target = (POWER_FRAGMENT, outside) if reverse else (outside, POWER_FRAGMENT)
+                fixture = self.vintf_fixture(Path(directory), fragments=(
+                    vintf_member(target, STOCK_POWER),
+                    vintf_member(source, None, tarfile.LNKTYPE, f"{producer.AOSP_ROOT}/{target}"),
+                ))
+                with self.assertRaisesRegex(producer.InputError, "hardlink crosses device VINTF selection"):
+                    self.prepare(fixture)
+
+    def test_stock_camera_instance_and_multi_version_hidl_syntax(self):
+        data = b'''<manifest version="1.0" type="device">
+          <hal format="aidl"><name>android.hardware.camera.provider</name><version>1</version>
+            <interface><name>ICameraProvider</name><instance>internal/0</instance></interface></hal>
+          <hal><name>android.hardware.gnss</name><transport>hwbinder</transport>
+            <version>2.0</version><version>1.1</version>
+            <interface><name>IGnss</name><instance>default</instance></interface></hal>
+        </manifest>'''
+        contracts = producer.device_manifest_contracts(data, "stock syntax fixture")
+        self.assertEqual(set(contracts), {
+            "android.hardware.camera.provider.ICameraProvider/internal/0",
+            "android.hardware.gnss@2.0::IGnss/default", "android.hardware.gnss@1.1::IGnss/default",
+        })
 
     def test_archive_preserves_stock_metadata_and_pins_layers(self):
         with tempfile.TemporaryDirectory(prefix="session-test-") as directory:

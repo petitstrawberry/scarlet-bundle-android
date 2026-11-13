@@ -18,8 +18,10 @@ import os
 import posixpath
 import re
 import stat
+import sys
 import tarfile
 import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -30,6 +32,9 @@ except ModuleNotFoundError:  # Python 3.9/3.10 hosts use the packaged fallback.
     import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "producer"))
+from policy.selections import DEVICE_PROVIDERS, KEYMINT_DEVICE, validate_vintf_selection
+
 AOSP_ROOT = "android-aarch64"
 OUTER_ROOT = "android-session-aarch64"
 ANDROID_ROOT = "systems/android-aarch64"
@@ -60,6 +65,16 @@ MAX_POLICY_LINE_CHARS = 8192
 MAX_FILE_LABELS = 4096
 COPY_CHUNK = 1024 * 1024
 FILE_LABEL_POLICY = "scarlet/boot/shield.policy"
+DEVICE_MANIFEST = "vendor/etc/vintf/manifest.xml"
+DEVICE_FRAGMENT_ROOTS = ("vendor/etc/vintf/manifest", "odm/etc/vintf/manifest")
+# Only the fragment roots themselves must be real directories. Android images
+# commonly alias an entire partition prefix (for example ``odm/etc`` to
+# ``/vendor/odm/etc``); requiring every lexical parent to be a directory would
+# reject a stock tree without increasing the selection boundary.
+DEVICE_VINTF_DIRECTORIES = set(DEVICE_FRAGMENT_ROOTS)
+MAX_VINTF_BYTES = 256 * 1024
+MAX_VINTF_FRAGMENTS = 256
+EMPTY_DEVICE_MANIFEST = b'<manifest version="1.0" type="device" />\n'
 
 
 class InputError(ValueError):
@@ -111,6 +126,7 @@ class SessionPlan:
     manager_fs: ComponentTree
     native_entries: dict[str, HostFile]
     lock_inputs: dict[str, Any]
+    generated_files: dict[str, bytes]
 
 
 def sha256_file(path: Path) -> str:
@@ -380,14 +396,184 @@ def guest_link_resolution(name: str, target: Any) -> str:
     return resolved
 
 
-def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
-        str, dict[str, str], dict[str, str], dict[str, str], dict[str, Any]]:
+def is_device_fragment(path: str) -> bool:
+    return any(path.startswith(root + "/") for root in DEVICE_FRAGMENT_ROOTS)
+
+
+def is_other_device_aggregate(path: str) -> bool:
+    return (path in {"vendor/manifest.xml", "odm/manifest.xml", "odm/etc/vintf/manifest.xml"} or
+            any(path.startswith(f"{partition}/etc/vintf/manifest_") and path.endswith(".xml")
+                for partition in ("vendor", "odm")))
+
+
+def device_manifest_contracts(data: bytes, label: str) -> dict[str, dict[str, str]]:
+    """Read the bounded AIDL/HIDL manifest subset used by the profile producer.
+
+    Reject unrecognized constructs instead of claiming an exact selection after
+    ignoring declarations, overrides, or alternate interface/version syntax.
+    """
+    def invalid() -> InputError:
+        return InputError(f"malformed or ambiguous device VINTF manifest: {label}")
+
+    if len(data) > MAX_VINTF_BYTES:
+        raise InputError(f"device VINTF manifest exceeds its size bound: {label}")
+    try:
+        text = data.decode("utf-8")
+        if "\0" in text or re.search(r"<!\s*(?:DOCTYPE|ENTITY)\b", text, re.IGNORECASE):
+            raise invalid()
+        root = ET.fromstring(text)
+    except (UnicodeDecodeError, ET.ParseError) as error:
+        raise invalid() from error
+    if (root.tag != "manifest" or root.get("type") != "device" or
+            set(root.attrib) - {"version", "type", "target-level"} or
+            re.fullmatch(r"[1-9][0-9]*\.[0-9]+", root.get("version", "")) is None or
+            ("target-level" in root.attrib and
+             re.fullmatch(r"[1-9][0-9]*", root.get("target-level", "")) is None) or
+            sum(1 for _ in root.iter()) > 4096):
+        raise invalid()
+
+    def container(node: ET.Element, allowed: set[str]) -> None:
+        if ((node.text or "").strip() or
+                any(child.tag not in allowed or (child.tail or "").strip() for child in node)):
+            raise invalid()
+
+    def leaf(node: ET.Element, pattern: str, attributes: frozenset[str] | set[str] = frozenset()) -> str:
+        value = (node.text or "").strip()
+        if (len(node) or set(node.attrib) - attributes or len(value) > 256 or
+                re.fullmatch(pattern, value) is None):
+            raise invalid()
+        return value
+
+    def one(node: ET.Element, tag: str) -> ET.Element:
+        matches = node.findall(tag)
+        if len(matches) != 1:
+            raise invalid()
+        return matches[0]
+
+    identifier = r"[A-Za-z_][A-Za-z0-9_]*"
+    instance_name = r"[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*"
+    instance = identifier + "/" + instance_name
+    version_pattern = r"[0-9]+\.[0-9]+"
+    container(root, {"hal", "sepolicy"})
+    if len(root.findall("sepolicy")) > 1:
+        raise invalid()
+    for sepolicy in root.findall("sepolicy"):
+        container(sepolicy, {"version"})
+        if sepolicy.attrib:
+            raise invalid()
+        leaf(one(sepolicy, "version"), version_pattern)
+    contracts: dict[str, dict[str, str]] = {}
+    for hal in root.findall("hal"):
+        container(hal, {"name", "transport", "version", "fqname", "interface"})
+        kind = hal.get("format", "hidl")
+        if kind not in ("aidl", "hidl") or set(hal.attrib) - {"format"}:
+            raise invalid()
+        package = leaf(one(hal, "name"), identifier + r"(?:\." + identifier + r")+")
+        versions = [leaf(value, r"[1-9][0-9]*" if kind == "aidl" else version_pattern)
+                    for value in hal.findall("version")]
+        if len(versions) != len(set(versions)):
+            raise invalid()
+        arch = ""
+        if kind == "aidl":
+            if hal.findall("transport") or len(versions) > 1:
+                raise invalid()
+            versions = versions or ["1"]
+            transport = "aidl"
+        else:
+            element = one(hal, "transport")
+            transport = leaf(element, r"hwbinder|passthrough", {"arch"})
+            arch = element.get("arch", "")
+            if ((transport == "hwbinder" and arch) or
+                    (transport == "passthrough" and arch not in ("32", "64", "32+64"))):
+                raise invalid()
+        declared = 0
+        used_versions: set[str] = set()
+
+        def add(version: str, qualified: str) -> None:
+            nonlocal declared
+            contract = (f"{package}.{qualified}" if kind == "aidl" else
+                        f"{package}@{version}::{qualified}")
+            if contract in contracts or len(contracts) >= MAX_VINTF_FRAGMENTS:
+                raise invalid()
+            contracts[contract] = {"format": kind, "version": version,
+                                   "transport": transport, "arch": arch}
+            declared += 1
+            used_versions.add(version)
+
+        for fqname in hal.findall("fqname"):
+            if kind == "aidl":
+                add(versions[0], leaf(fqname, instance))
+            else:
+                value = leaf(fqname, r"@" + version_pattern + r"::" + instance)
+                version, qualified = value[1:].split("::")
+                if versions and version not in versions:
+                    raise invalid()
+                add(version, qualified)
+        for interface in hal.findall("interface"):
+            container(interface, {"name", "instance"})
+            if interface.attrib or not versions or not interface.findall("instance"):
+                raise invalid()
+            name = leaf(one(interface, "name"), identifier)
+            for value in interface.findall("instance"):
+                qualified = name + "/" + leaf(value, instance_name)
+                for version in versions:
+                    add(version, qualified)
+        if not declared or set(versions) - used_versions:
+            raise invalid()
+    return contracts
+
+
+def verify_device_vintf_selection(boot: BootOverlay) -> dict[str, Any] | None:
+    selection = boot.metadata["profile"].get("vintf")
+    if selection is None:
+        return None
+    try:
+        validate_vintf_selection(selection)
+    except ValueError as error:
+        raise InputError(str(error)) from error
+    aggregate = boot.files.get(DEVICE_MANIFEST)
+    if aggregate is None:
+        raise InputError("explicit device VINTF selection requires a prepared vendor aggregate")
+    require_regular(aggregate.source, "prepared device VINTF aggregate")
+    if (aggregate.source != boot.root / DEVICE_MANIFEST or
+            aggregate.source.resolve() != boot.root.resolve() / DEVICE_MANIFEST):
+        raise InputError("prepared device VINTF aggregate must be a regular file at its declared root")
+    with aggregate.source.open("rb") as stream:
+        data = stream.read(MAX_VINTF_BYTES + 1)
+    actual = device_manifest_contracts(data, DEVICE_MANIFEST)
+    if hashlib.sha256(data).hexdigest() != aggregate.sha256:
+        raise InputError("prepared device VINTF aggregate changed during validation")
+    expected = {}
+    for contract in selection["device"]:
+        transport = DEVICE_PROVIDERS[contract]
+        kind = "aidl" if contract in KEYMINT_DEVICE else "hidl"
+        version = (KEYMINT_DEVICE[contract][1] if kind == "aidl" else
+                   contract.split("@", 1)[1].split("::", 1)[0])
+        expected[contract] = {"format": kind, "version": version, "transport": transport,
+                              "arch": "64" if transport == "passthrough" else ""}
+    if actual != expected:
+        raise InputError("prepared device VINTF aggregate differs from profile.vintf.device contracts")
+    for path in (*boot.files, *boot.symlinks, *boot.directories):
+        if (is_device_fragment(path) or is_other_device_aggregate(path) or
+                (path in DEVICE_VINTF_DIRECTORIES and path not in boot.directories)):
+            raise InputError(f"prepared device VINTF fragment conflicts with aggregate selection: {path}")
+    return {"validation": "canonical-device-contracts-v1", "aggregate": DEVICE_MANIFEST,
+            "aggregate_sha256": aggregate.sha256, "contracts": actual,
+            "selection": selection["device"],
+            "selection_sha256": canonical_digest(selection["device"]),
+            "fragment_roots": list(DEVICE_FRAGMENT_ROOTS)}
+
+
+def scan_aosp(archive: Path, boot: BootOverlay, device_selection: dict[str, Any] | None = None) -> tuple[
+        str, dict[str, str], dict[str, str], dict[str, str], dict[str, Any], dict[str, bytes]]:
     require_regular(archive, "AOSP archive")
     archive_digest = sha256_file(archive)
     kinds: dict[str, str] = {}
     links: dict[str, str] = {}
     digests: dict[str, str] = {}
     hardlinks: dict[str, str] = {}
+    generated: dict[str, bytes] = {}
+    fragment_bytes = 0
     provenance_data: bytes | None = None
     count = 0
     with tarfile.open(archive, "r|gz") as source:
@@ -406,6 +592,24 @@ def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
                 relative_path(relative)
             if relative and relative in kinds:
                 raise InputError(f"duplicate AOSP entry: {relative}")
+            fragment = device_selection is not None and is_device_fragment(relative)
+            if device_selection is not None:
+                if relative in DEVICE_VINTF_DIRECTORIES and not member.isdir():
+                    raise InputError(f"device VINTF directory is not a real directory: {relative}")
+                if is_other_device_aggregate(relative):
+                    raise InputError(f"ambiguous additional device VINTF aggregate: {relative}")
+                if relative == DEVICE_MANIFEST and not member.isreg():
+                    raise InputError("stock device VINTF aggregate is not a regular file")
+            if fragment:
+                if (not (member.isreg() or member.islnk()) or not relative.endswith(".xml") or
+                        posixpath.dirname(relative) not in DEVICE_FRAGMENT_ROOTS):
+                    raise InputError(f"unsupported device VINTF fragment kind or path: {relative}")
+                if member.size > MAX_VINTF_BYTES or len(generated) >= MAX_VINTF_FRAGMENTS:
+                    raise InputError("device VINTF fragments exceed their input bound")
+                fragment_bytes += member.size
+                if fragment_bytes > MAX_MANIFEST_BYTES:
+                    raise InputError("device VINTF fragments exceed their total byte bound")
+                generated[relative] = EMPTY_DEVICE_MANIFEST
             if member.isdir():
                 kind = "dir"
             elif member.issym():
@@ -422,15 +626,23 @@ def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
                     if not target.startswith(AOSP_ROOT + "/"):
                         raise InputError(f"AOSP hardlink escapes its root: {relative}")
                     hardlinks[relative] = target[len(AOSP_ROOT) + 1:]
+                    relative_path(hardlinks[relative])
                 else:
                     stream = source.extractfile(member)
                     if stream is None:
                         raise InputError(f"AOSP archive has no payload for {relative}")
                     digest = hashlib.sha256()
                     provenance_chunks: list[bytes] = []
+                    fragment_chunks: list[bytes] = []
                     provenance_size = 0
+                    fragment_size = 0
                     while chunk := stream.read(COPY_CHUNK):
                         digest.update(chunk)
+                        if fragment:
+                            fragment_size += len(chunk)
+                            if fragment_size > MAX_VINTF_BYTES:
+                                raise InputError(f"device VINTF manifest exceeds its size bound: {relative}")
+                            fragment_chunks.append(chunk)
                         if relative == "provenance.json":
                             provenance_size += len(chunk)
                             if provenance_size > MAX_MANIFEST_BYTES:
@@ -439,11 +651,16 @@ def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
                     digests[relative] = digest.hexdigest()
                     if relative == "provenance.json":
                         provenance_data = b"".join(provenance_chunks)
+                    if fragment:
+                        device_manifest_contracts(b"".join(fragment_chunks), relative)
     if "provenance.json" not in kinds:
         raise InputError("AOSP archive lacks provenance.json")
     if provenance_data is None:
         raise InputError("AOSP provenance payload is missing")
     pending_hardlinks = dict(hardlinks)
+    for relative, target in hardlinks.items():
+        if (relative in generated) != (target in generated):
+            raise InputError(f"AOSP hardlink crosses device VINTF selection: {relative}")
     while pending_hardlinks:
         progressed = False
         for relative, target in list(pending_hardlinks.items()):
@@ -462,7 +679,7 @@ def scan_aosp(archive: Path, boot: BootOverlay) -> tuple[
         raise InputError("AOSP SDK hash does not match the prepared boot inputs")
     for name, target in links.items():
         guest_link_resolution(name, target)
-    return archive_digest, kinds, links, digests, provenance
+    return archive_digest, kinds, links, digests, provenance, generated
 
 
 def normalize_existing_link(name: str, target: str) -> str:
@@ -679,7 +896,9 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
                     graphics_adapters: Path, manager_fs: Path,
                     aosp_sha256: str | None = None) -> SessionPlan:
     boot = verify_boot_inputs(boot_inputs, boot_manifest)
-    archive_digest, stock_kinds, stock_links, stock_digests, provenance = scan_aosp(aosp_archive, boot)
+    device_selection = verify_device_vintf_selection(boot)
+    archive_digest, stock_kinds, stock_links, stock_digests, provenance, generated_files = scan_aosp(
+        aosp_archive, boot, device_selection)
     if aosp_sha256 is not None and archive_digest != aosp_sha256:
         raise InputError("AOSP archive SHA-256 mismatch")
 
@@ -720,6 +939,10 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
     port_replacements = boot.metadata.get("port_replacements", {})
     for declared, item in boot.files.items():
         final = resolve_stock_alias(declared, stock_links, stock_kinds)
+        if device_selection is not None and (
+                is_device_fragment(final) or is_other_device_aggregate(final) or
+                final in DEVICE_VINTF_DIRECTORIES):
+            raise InputError(f"prepared device VINTF fragment conflicts with aggregate selection: {declared}")
         if final in overlay_files:
             raise InputError(f"duplicate resolved overlay target: {final}")
         if stock_kinds.get(final) in ("file", "dir", "symlink"):
@@ -753,6 +976,10 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
     overlay_symlinks: dict[str, str] = {}
     for declared, target in boot.symlinks.items():
         final = resolve_stock_alias(declared, stock_links, stock_kinds, follow_final=False)
+        if device_selection is not None and (
+                is_device_fragment(final) or is_other_device_aggregate(final) or
+                final in DEVICE_VINTF_DIRECTORIES):
+            raise InputError(f"prepared device VINTF alias conflicts with aggregate selection: {declared}")
         if final in overlay_symlinks or final in overlay_files:
             raise InputError(f"duplicate resolved boot target: {final}")
         existing = stock_kinds.get(final)
@@ -763,6 +990,14 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
         if existing is not None:
             raise InputError(f"boot symlink conflicts with AOSP: {declared}")
         overlay_symlinks[final] = target
+
+    for path, data in sorted(generated_files.items()):
+        stock_content_overrides[path] = {
+            "resolved": path, "aosp_sha256": stock_digests[path],
+            "installed_sha256": hashlib.sha256(data).hexdigest(),
+            "reason": "supplemental device manifest neutralized by complete profile.vintf.device selection",
+            "selection_sha256": device_selection["selection_sha256"],
+        }
 
     for final in overlay_files:
         if final in stock_kinds or final in overlay_symlinks:
@@ -865,14 +1100,19 @@ def prepare_session(*, aosp_archive: Path, boot_inputs: Path, boot_manifest: Pat
             "installed_overrides": boot_graphics_overrides,
         },
     }
+    if device_selection is not None:
+        lock_inputs["boot"]["device_vintf_selection"] = device_selection
     return SessionPlan(aosp_archive, archive_digest, stock_kinds, stock_links, stock_digests,
                        provenance, boot, overlay_files, overlay_symlinks, overlay_directories,
-                       components, runtime, manager, native_entries, lock_inputs)
+                       components, runtime, manager, native_entries, lock_inputs, generated_files)
 
 
 def stock_tar_info(member: tarfile.TarInfo, name: str) -> tarfile.TarInfo:
     info = copy.copy(member)
+    info.pax_headers = member.pax_headers.copy()
     info.name = name
+    if "path" in info.pax_headers:
+        info.pax_headers["path"] = name
     info.uname = info.gname = ""
     if info.islnk():
         target = member.linkname.rstrip("/")
@@ -883,6 +1123,8 @@ def stock_tar_info(member: tarfile.TarInfo, name: str) -> tarfile.TarInfo:
         else:
             raise InputError(f"AOSP hardlink escapes its root: {member.name}")
         info.linkname = f"{OUTER_ROOT}/{ANDROID_ROOT}" + (f"/{relative}" if relative else "")
+        if "linkpath" in info.pax_headers:
+            info.pax_headers["linkpath"] = info.linkname
     return info
 
 
@@ -904,6 +1146,7 @@ def new_symlink(name: str, target: str) -> tarfile.TarInfo:
 def write_file(archive: tarfile.TarFile, info: tarfile.TarInfo, path: Path,
                expected: str | None) -> None:
     info.size = path.stat().st_size
+    info.pax_headers.pop("size", None)
     with path.open("rb") as stream:
         archive.addfile(info, stream)
     if expected is not None and sha256_file(path) != expected:
@@ -925,8 +1168,8 @@ def overlay_file_info(name: str, source: HostFile, stock: tarfile.TarInfo | None
 
 
 def write_archive(plan: SessionPlan, output: Path) -> None:
-    overlaid = set(plan.overlay_files)
-    replaced_stock = overlaid
+    overlaid = set(plan.overlay_files) | set(plan.generated_files)
+    replaced_stock = set(plan.overlay_files)
     native = set(plan.native_entries)
     new_overlay_dirs = set(plan.overlay_directories)
     new_native_dirs = set()
@@ -967,6 +1210,20 @@ def write_archive(plan: SessionPlan, output: Path) -> None:
                 if relative in replaced_stock:
                     continue
                 target = f"{OUTER_ROOT}/{ANDROID_ROOT}" + (f"/{relative}" if relative else "")
+                if relative in plan.generated_files:
+                    info = stock_tar_info(member, target)
+                    if member.islnk():
+                        # Both ends of this link were checked to be in the
+                        # fragment selection and receive the same empty XML.
+                        archive.addfile(info)
+                    elif member.isreg():
+                        data = plan.generated_files[relative]
+                        info.size = len(data)
+                        info.pax_headers.pop("size", None)
+                        archive.addfile(info, io.BytesIO(data))
+                    else:
+                        raise InputError(f"device VINTF fragment changed kind: {relative}")
+                    continue
                 if member.islnk():
                     link_relative = member.linkname[len(AOSP_ROOT) + 1:] if member.linkname.startswith(AOSP_ROOT + "/") else ""
                     if link_relative in overlaid:

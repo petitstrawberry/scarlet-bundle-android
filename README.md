@@ -95,12 +95,16 @@ in its own PID/mount namespace. After preserving APEX symlink targets through
 archive import, Zygote and system_server also started. The native Android window,
 SurfaceFlinger and graphics HAL processes were observed; the window content
 remained black. Home and app display through this launch path remain unverified.
-Stock init diagnostics exposed label-restoration failures from preserved AOSP
-inode labels and unsupported SYSLOG/AUDIT_CONTROL capabilities requested by
-stock logd. The producer now derives compact relabel sets from concrete stock
-policy evidence. The older diagnostic launch also had the logd capability
-failure and supplied a separate log receiver; its boot result does not establish
-that stock logging worked. Configured launches require the exact
+Stock init diagnostics exposed label-restoration failures and unsupported
+SYSLOG/AUDIT_CONTROL capabilities requested by stock logd. Both also occur in
+the older diagnostic boot log and are not established causes of the new black
+window. The producer now derives compact relabel sets from concrete stock
+policy evidence. The older launch supplied a separate log receiver and a
+preloaded library that replaced Power HAL boost/mode calls. The ordinary
+manager loads neither library. Full AOSP also supplies additional vendor VINTF
+fragments; declaring Power HAL without starting its provider leads stock
+clients into service waits. Session packaging must apply the explicit device
+profile to those fragments as well as the aggregate manifest. Configured launches require the exact
 command and capture startup errors in the native logd. The stock init lifecycle
 begins after an explicit catalog launch.
 The full producer archive above contains stock AOSP only.
