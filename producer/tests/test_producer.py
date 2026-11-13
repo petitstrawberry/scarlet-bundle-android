@@ -1,5 +1,6 @@
 """Image-to-archive regression tests; all images are temporary and unprivileged."""
 import os
+import json
 from pathlib import Path
 import shutil
 import subprocess
@@ -52,6 +53,25 @@ class SymlinkMetadataTests(unittest.TestCase):
                 "android-aarch64/init",
                 "/outside/libbase.so",
             )
+
+    def test_device_profile_replaces_boot_properties_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "root"
+            prop = root / "product/etc/build.prop"
+            prop.parent.mkdir(parents=True)
+            prop.write_text("ro.product.name=stock\npersist.traced.enable=1\n")
+            profile = base / "profile.json"
+            profile.write_text(json.dumps({"boot_properties": {
+                "persist.traced.enable": "0",
+                "ro.hardware": "scarlet",
+            }}))
+            producer.apply_boot_properties(root, profile)
+            self.assertEqual(prop.read_text().splitlines(), [
+                "ro.product.name=stock",
+                "persist.traced.enable=0",
+                "ro.hardware=scarlet",
+            ])
 
 
 @unittest.skipUnless(shutil.which("mke2fs") and shutil.which("debugfs"), "e2fsprogs required")

@@ -2,9 +2,13 @@ name: Build Android userspace bundle
 
 on:
   push:
-    paths:
-      - 'producer/**'
-      - '.github/workflows/build.yml'
+    branches:
+      - main
+    tags:
+      - 'v*'
+    paths-ignore:
+      - 'bundles/**'
+      - '**/*.md'
   pull_request:
     paths:
       - 'producer/**'
@@ -12,9 +16,22 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: New release version
+        description: Release version
         required: true
         default: v0.1.0
+      source_url:
+        description: HTTPS URL of the exact AOSP corresponding-source archive
+        required: true
+      source_sha256:
+        description: SHA-256 of the corresponding-source archive
+        required: true
+      source_revision:
+        description: Exact AOSP source revision represented by the archive
+        required: true
+      publish:
+        description: Publish after the draft release and bundle pin are verified
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -30,7 +47,7 @@ jobs:
       - run: python3 -m unittest discover -s producer/tests
 
   build:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -49,11 +66,69 @@ jobs:
           PY
       - name: Build bundle
         env:
-          VERSION: ${{ inputs.version }}
-        run: python3 producer/tools/build_rootfs.py --sdk-image producer/cache/arm64-v8a-33_r02.zip --version "$VERSION" --output producer/artifacts
+          VERSION: ${{ inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('v0.1.{0}', github.run_number) }}
+        run: >-
+          python3 producer/tools/build_rootfs.py
+          --sdk-image producer/cache/arm64-v8a-33_r02.zip
+          --profile profiles/scarlet-arm64-flattened.json
+          --version "$VERSION" --output producer/artifacts
       - name: Validate archive
         env:
-          VERSION: ${{ inputs.version }}
+          VERSION: ${{ inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('v0.1.{0}', github.run_number) }}
         run: python3 producer/tests/check_archive.py "producer/artifacts/android-aarch64-${VERSION}.tar.gz"
-      # Binary publication is added with the exact corresponding-source bundle.
       - run: cat producer/artifacts/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-aarch64-${{ inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('v0.1.{0}', github.run_number) }}
+          path: producer/artifacts/
+          if-no-files-found: error
+          compression-level: 0
+
+  release:
+    if: >-
+      needs.build.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' ||
+       github.event_name == 'workflow_dispatch' && inputs.publish) &&
+      (github.event_name == 'workflow_dispatch' || vars.ANDROID_SOURCE_ARCHIVE_URL != '')
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    concurrency:
+      group: android-bundle-release
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('v0.1.{0}', github.run_number) }}
+      BUILD_REVISION: ${{ github.sha }}
+      SOURCE_URL: ${{ inputs.source_url || vars.ANDROID_SOURCE_ARCHIVE_URL }}
+      SOURCE_SHA256: ${{ inputs.source_sha256 || vars.ANDROID_SOURCE_ARCHIVE_SHA256 }}
+      SOURCE_REVISION: ${{ inputs.source_revision || vars.ANDROID_SOURCE_REVISION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-aarch64-${{ inputs.version || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || format('v0.1.{0}', github.run_number) }}
+          path: producer/artifacts
+      - run: sudo apt-get update && sudo apt-get install -y zstd
+      - name: Fetch and verify corresponding AOSP source archive
+        run: |
+          test -n "$SOURCE_URL"
+          test -n "$SOURCE_SHA256"
+          test -n "$SOURCE_REVISION"
+          curl --fail --location --retry 3 \
+            --output "$RUNNER_TEMP/aosp-sources.tar.zst" "$SOURCE_URL"
+          echo "$SOURCE_SHA256  $RUNNER_TEMP/aosp-sources.tar.zst" | sha256sum --check
+          zstd --test "$RUNNER_TEMP/aosp-sources.tar.zst"
+      - name: Create draft release and pin bundle
+        run: |
+          args=(--version "$VERSION" --build-revision "$BUILD_REVISION"
+                --artifact-dir producer/artifacts
+                --source-archive "$RUNNER_TEMP/aosp-sources.tar.zst"
+                --source-url "$SOURCE_URL" --source-sha256 "$SOURCE_SHA256"
+                --source-revision "$SOURCE_REVISION")
+          if [[ "${{ github.event_name }}" == push || "${{ inputs.publish }}" == true ]]; then
+            args+=(--publish)
+          fi
+          python3 producer/tools/publish_release.py "${args[@]}"

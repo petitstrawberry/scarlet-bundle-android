@@ -210,6 +210,28 @@ def assemble_root(partitions: Path, temporary: Path) -> tuple[Path, dict]:
     return root, metadata
 
 
+def apply_boot_properties(root: Path, profile_path: Path) -> None:
+    """Apply the explicit Android device profile to the stock product props."""
+    profile = json.loads(profile_path.read_text())
+    properties = profile.get("boot_properties")
+    if not isinstance(properties, dict) or not properties:
+        raise ValueError("profile boot_properties are missing")
+    normalized = {}
+    for key, value in properties.items():
+        if (not isinstance(key, str) or not isinstance(value, str) or
+                re.fullmatch(r"[A-Za-z0-9_.-]+", key) is None or
+                any(character in value for character in "\0\r\n")):
+            raise ValueError("invalid boot property")
+        normalized[key] = value
+    path = root / "product/etc/build.prop"
+    if not path.is_file() or path.is_symlink():
+        raise ValueError("product build.prop is missing")
+    lines = [line for line in path.read_text().splitlines()
+             if line.split("=", 1)[0] not in normalized]
+    lines.extend(f"{key}={value}" for key, value in sorted(normalized.items()))
+    path.write_text("\n".join(lines) + "\n")
+
+
 def write_archive(root: Path, output: Path, metadata: dict) -> None:
     # Do not include a host filename or wall-clock gzip timestamp in the digest.
     with output.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed, \
@@ -254,6 +276,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--sdk-image", type=Path, required=True)
     parser.add_argument("--version", required=True)
+    parser.add_argument("--profile", type=Path,
+                        default=ROOT / "profiles/scarlet-arm64-flattened.json",
+                        help="device profile whose boot properties are applied to product build.prop")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args.version):
@@ -274,6 +299,8 @@ def main() -> int:
         partitions.mkdir()
         provenance_input = extract_partitions(args.sdk_image, lock, partitions)
         root, metadata = assemble_root(partitions, temporary)
+        if args.profile is not None:
+            apply_boot_properties(root, args.profile)
         with zipfile.ZipFile(args.sdk_image) as sdk:
             notice = sdk.read(f"{lock['abi']}/NOTICE.txt")
         notice_path = root / "licenses/android-sdk/NOTICE.txt"
@@ -288,6 +315,13 @@ def main() -> int:
             "source_properties": provenance_input["source_properties"],
             "build_properties": provenance_input["build_properties"],
         }
+        if args.profile is not None:
+            provenance["device_profile"] = {
+                "path": args.profile.name,
+                "sha256": sha256(args.profile),
+                "boot_properties": dict(sorted(
+                    json.loads(args.profile.read_text())["boot_properties"].items())),
+            }
         (root / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
         candidate = temporary / archive_name
         write_archive(root, candidate, metadata)

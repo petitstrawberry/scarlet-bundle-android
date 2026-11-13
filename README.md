@@ -16,8 +16,9 @@ under `manager/`, and the graphics HAL and stock adapters are under `graphics/`.
 The boot profile and its Shield policy translator are under `profiles/` and
 `producer/policy/`. Prepared init/APEX files and source-policy exports still come
 from the Scarlet development inputs.
-No binary release has been published:
-the exact corresponding-source record for SDK build 10940250 is still missing.
+No binary release has been published. The release workflow requires the exact
+corresponding-source archive, SHA-256 and source revision for SDK build 10940250
+before it creates a draft release, pins the bundle and makes the release public.
 
 ## Build
 
@@ -27,6 +28,7 @@ Requirements: Python 3.11+, `debugfs`, and the pinned SDK archive.
 curl -LO https://dl.google.com/android/repository/sys-img/android/arm64-v8a-33_r02.zip
 python3 producer/tools/build_rootfs.py \
   --sdk-image arm64-v8a-33_r02.zip \
+  --profile profiles/scarlet-arm64-flattened.json \
   --version v0.1.0 \
   --output producer/artifacts
 ```
@@ -58,6 +60,22 @@ on `fix/archive-inode-metadata`. The complete archive was imported into ext2 and
 sampled for ownership and label retention. Scarlet's default SDK pin and image
 have not been switched. This stock archive alone is not a configured or
 boot-validated Scarlet Android environment.
+
+## Release
+
+Main-branch producer changes build and publish `v0.1.<run-number>` automatically
+when the source repository variables are configured. A `v*` tag or
+`workflow_dispatch` with a `vX.Y.Z` version can be used for an explicit release;
+both require the URL, SHA-256 and exact source revision of the corresponding
+AOSP source archive. Tag and main-branch releases use the repository variables
+`ANDROID_SOURCE_ARCHIVE_URL`, `ANDROID_SOURCE_ARCHIVE_SHA256` and
+`ANDROID_SOURCE_REVISION`.
+
+CI validates the binary archive and source digest, creates a draft prerelease,
+checks every uploaded asset, commits the verified manifest to
+`bundles/android/bundle.toml`, and only then publishes the release. The release
+contains the Android archive, exact AOSP sources, producer sources,
+`corresponding-source.json`, checksums and the pinned bundle manifest.
 
 ## Native userspace
 
@@ -172,7 +190,9 @@ The Android images remain under their upstream licenses. The SDK `NOTICE.txt`,
 image identity, build fingerprint, and exact input digest are retained in every
 archive. See [ATTRIBUTION.md](ATTRIBUTION.md).
 
-Before publishing a binary, establish its exact matching source manifest and
-provide the corresponding source materials required by included licenses. The
-`default` tag and retained NOTICE are input identity, not proof of redistribution
-compliance. See `producer/release-notes.md` for the unresolved source identity.
+The `v*` tag or manual workflow requires a corresponding-source archive URL,
+SHA-256 and exact source revision. CI builds and validates the binary, verifies
+the source digest, creates a draft prerelease with both archives and provenance,
+then commits the verified manifest to `bundles/android/bundle.toml` before the
+release is made public. The `default` tag and retained NOTICE are input identity,
+not a substitute for the source record. See `producer/release-notes.md`.
