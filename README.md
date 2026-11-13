@@ -79,13 +79,17 @@ installs it at `/applications/android.app`, the frontend at `/bin/android-runtim
 and the explicit administrator grant under `/etc/stemd.d/capabilities`. The
 generated app descriptor provides its catalog entry. This requires Scarlet's
 explicit application grants from commit
-[`e62bf8855`](https://github.com/petitstrawberry/Scarlet/commit/e62bf8855).
+[`e62bf8855`](https://github.com/petitstrawberry/Scarlet/commit/e62bf8855), including
+the whole-View mount preservation fix
+[`bad9815a6`](https://github.com/petitstrawberry/Scarlet/commit/bad9815a6).
 Both binaries cross-build for AArch64. On a normal four-core HVF desktop, the
 catalog entry launches the manager with its View, rejects a changed command,
 and captures startup errors in logd. Direct invocation without a delegated View
-is rejected. This test used a desktop without the Android root; a complete
-Android session through the new manager remains unverified. The full producer
-archive above contains stock AOSP only.
+is rejected. The complete session archive imports through the SDK and boots the
+normal desktop. Manager launch now reaches Shield policy construction after
+connecting its Views, but construction authority still needs explicit delegation;
+stock init and the Android home screen through this path remain unverified.
+The full producer archive above contains stock AOSP only.
 
 ## Complete session archive
 
