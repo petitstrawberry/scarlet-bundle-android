@@ -16,60 +16,51 @@ under `manager/`, and the graphics HAL and stock adapters are under `graphics/`.
 The boot profile and its Shield policy translator are under `profiles/` and
 `producer/policy/`. Prepared init/APEX files and source-policy exports still come
 from the Scarlet development inputs.
-`v0.1.14` is public and contains the stock AOSP userspace archive only. The
-current producer adds a separately built native manager/frontend archive. The
+[`v0.1.16`](https://github.com/petitstrawberry/scarlet-bundle-android/releases/tag/v0.1.16)
+is public and contains the complete prepared Android runtime plus a separately
+built native manager/frontend archive. The
 release workflow requires the exact corresponding-source archive, SHA-256 and
 source revision for SDK build 10940250 before it creates a draft release, pins
 the bundle and makes the release public.
 
 ## Build
 
-Requirements: Python 3.11+, `debugfs`, and the pinned SDK archive.
+The release build uses the pinned prepared runtime in
+`producer/runtime-input.json` and builds the native manager/frontend from this
+repository. Run the same two steps as CI:
 
 ```sh
-curl -LO https://dl.google.com/android/repository/sys-img/android/arm64-v8a-33_r02.zip
-python3 producer/tools/build_rootfs.py \
-  --sdk-image arm64-v8a-33_r02.zip \
-  --profile profiles/scarlet-arm64-flattened.json \
-  --overlay overlay \
-  --version v0.1.0 \
-  --output producer/artifacts
+python3 producer/tools/import_session_runtime.py \
+  --version v0.1.0 --output producer/artifacts
+nix develop --command python3 producer/tools/build_native.py \
+  --version v0.1.0 --output producer/artifacts
 ```
 
-The producer verifies the input SHA-256 and AOSP tag, exports all four userspace
-partitions (including the complete system-as-root tree), and preserves numeric
-ownership, modes, modification times, hardlinks and extended attributes in the
-PAX archive. Symlink targets retain their original absolute or relative form;
-absolute targets are validated as guest paths without following host files.
-This also preserves references from APEX payloads after stock apexd mounts
-them at `/apex`. No files or services are selected out.
+The importer verifies the archive and assembly-lock SHA-256 values, retains the
+complete Android tree and its inode metadata, and rejects inputs missing the
+flattened ART APEX, graphics HAL/adapters, Shield policy or input bridge. It
+keeps the upstream provenance and assembly lock inside the runtime archive.
+The native build uses the pinned Scarlet toolchain and SDK.
 
-The `overlay/` tree supplies the repository-owned `/scarlet` boot policy,
-flattened APEX init configuration and stock InputManager bridge. It is merged
-after the pinned AOSP export, and its digest is recorded in `provenance.json`.
+Together these steps write:
 
-The producer writes:
-
-- `android-aarch64-v0.1.0.tar.gz` (the selected Android runtime view)
-- `android-native-aarch64-v0.1.0.tar.gz` (native manager and frontend overlay)
+- `android-aarch64-v0.1.0.tar.gz`
+- `android-native-aarch64-v0.1.0.tar.gz`
 - `SHA256SUMS`
-- `bundle.toml` as the candidate hash-pinned consumer manifest
-- `provenance.json` inside the Android runtime archive
+- `bundle.toml`, containing both hash-pinned archive layers
 
-Validate the archive with
+Validate the runtime with
 `python3 producer/tests/check_archive.py producer/artifacts/android-aarch64-v0.1.0.tar.gz`.
-Run the image-export regression with
-`python3 -m unittest discover -s producer/tests` (requires `mke2fs` and `debugfs`).
-It checks real ext4 inodes, binary xattrs, hardlinks, system-as-root contents and
-reproducible archive bytes without root privileges.
+The native archive is validated during packaging and again before publication.
+Run the producer tests with `python3 -m unittest discover -s producer/tests`;
+the inode-export cases also require `mke2fs` and `debugfs`.
 
-Once a release is ready, a normal Scarlet bundle can consume the generated
-manifest. The metadata-preserving SDK importer is available in
-[`scarlet-sdk` commit 743bf61](https://github.com/petitstrawberry/scarlet-sdk/commit/743bf61),
-on `fix/archive-inode-metadata`. The complete archive was imported into ext2 and
-sampled for ownership and label retention. Scarlet's default SDK pin and image
-have not been switched. This stock archive alone is not a configured or
-boot-validated Scarlet Android environment.
+`producer/tools/build_rootfs.py` remains the stock SDK partition exporter used
+when preparing a new runtime input. It preserves ownership, modes, timestamps,
+hardlinks, xattrs and guest symlinks, and merges the checked-in `overlay/`.
+That export alone does not assemble flattened APEX or the graphics adapters.
+Use the complete-session assembly below to prepare and record a replacement
+input; release CI does not reconstruct those components from the SDK ZIP.
 
 ## Release
 
@@ -85,8 +76,8 @@ CI imports the checksum-pinned complete runtime archive, builds the native app
 and frontend with the pinned Scarlet Rust toolchain, validates both archive
 layouts and source digests, creates a draft prerelease, checks every uploaded
 asset, commits the two-layer manifest to `bundles/android/bundle.toml`, and only
-then publishes the release. The release contains both binary archives, exact
-AOSP sources, producer sources, `corresponding-source.json`, checksums and the
+then publishes the release. The release contains both binary archives, an exact
+AOSP source manifest and retrieval record, producer sources, `corresponding-source.json`, checksums and the
 pinned bundle manifest.
 
 ## Native userspace
@@ -128,7 +119,7 @@ includes the whole-View mount preservation fix and the native factory API.
 The earlier normal launch path reached Android home. The release consumes a
 checksum-pinned complete runtime artifact that includes the flattened APEX,
 graphics HAL/adapters and prepared boot adjustments; CI does not rebuild those
-components. Native compilation and archive import are validated, while final
+components. Archive import and native compilation passed release CI, while final
 release-runtime boot and graphics validation remain pending. This does not claim
 that every Android service or display path has completed.
 
