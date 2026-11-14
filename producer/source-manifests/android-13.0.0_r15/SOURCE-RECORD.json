@@ -1,0 +1,17 @@
+{
+  "android_release": "13",
+  "build_fingerprint": "Android/sdk_phone64_arm64/emulator64_arm64:13/TE1A.220922.034/10940250:userdebug/test-keys",
+  "build_id": "TE1A.220922.034",
+  "kind": "scarlet-android-aosp-source-manifest-v1",
+  "license_notice": "licenses/android-sdk/NOTICE.txt and provenance.json are retained in the binary archive",
+  "manifest": {
+    "checkout": "repo init -u https://android.googlesource.com/platform/manifest -b android-13.0.0_r15 && repo sync -c -j4",
+    "commit": "1013d985f70641b2cc05943f57fab5824d9e2ff3",
+    "tag": "android-13.0.0_r15",
+    "url": "https://android.googlesource.com/platform/manifest"
+  },
+  "sdk_image": {
+    "sha256": "55ba9a20d473dd5351c77342016956342c40375f3e073b65a43dc9db13ccc5c6",
+    "url": "https://dl.google.com/android/repository/sys-img/android/arm64-v8a-33_r02.zip"
+  }
+}
