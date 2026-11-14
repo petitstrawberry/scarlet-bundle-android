@@ -1,8 +1,11 @@
 {
   description = "Android userspace bundle producer for Scarlet";
   nixConfig = {
-    extra-substituters = [ "https://scarlet-rust-toolchain.cachix.org" ];
-    extra-trusted-public-keys = [ "scarlet-rust-toolchain.cachix.org-1:p+coBExi0nNTIvWF/oM9H9/1/GhwFtqGZ2Vs+4pYl6o=" ];
+    extra-substituters = [ "https://scarlet-rust-toolchain.cachix.org" "https://scarlet-dev.cachix.org" ];
+    extra-trusted-public-keys = [
+      "scarlet-rust-toolchain.cachix.org-1:p+coBExi0nNTIvWF/oM9H9/1/GhwFtqGZ2Vs+4pYl6o="
+      "scarlet-dev.cachix.org-1:KXKmR/eHKL9t5D4xGFb5NX5s5uUpVVL7HV9PrLZXFHU="
+    ];
   };
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";

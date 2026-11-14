@@ -64,6 +64,11 @@ jobs:
       - uses: cachix/cachix-action@v17
         with:
           name: scarlet-rust-toolchain
+          skipPush: true
+      - uses: cachix/cachix-action@v17
+        with:
+          name: scarlet-dev
+          skipPush: true
       - name: Install extraction tools
         run: sudo apt-get update && sudo apt-get install -y zstd
       - name: Import checksum-pinned complete Android runtime
