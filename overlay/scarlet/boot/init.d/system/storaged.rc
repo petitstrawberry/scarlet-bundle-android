@@ -1,0 +1,6 @@
+service storaged /system/bin/storaged
+    class main
+    priority 10
+    task_profiles ServiceCapacityLow
+    user root
+    group package_info

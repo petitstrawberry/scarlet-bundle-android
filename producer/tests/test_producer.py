@@ -73,6 +73,22 @@ class SymlinkMetadataTests(unittest.TestCase):
                 "ro.hardware=scarlet",
             ])
 
+    def test_runtime_overlay_is_digested_and_rejects_host_symlinks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            root = base / "root"
+            root.mkdir()
+            overlay = base / "overlay"
+            write = overlay / "scarlet/boot/config"
+            write.parent.mkdir(parents=True)
+            write.write_text("configuration\n")
+            digest = producer.apply_overlay(root, overlay)
+            self.assertEqual((root / "scarlet/boot/config").read_text(), "configuration\n")
+            self.assertRegex(digest, "^[0-9a-f]{64}$")
+            (overlay / "link").symlink_to("scarlet/boot/config")
+            with self.assertRaisesRegex(ValueError, "host symlink"):
+                producer.apply_overlay(root, overlay)
+
 
 @unittest.skipUnless(shutil.which("mke2fs") and shutil.which("debugfs"), "e2fsprogs required")
 class ImageExportTests(unittest.TestCase):

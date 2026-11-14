@@ -232,6 +232,31 @@ def apply_boot_properties(root: Path, profile_path: Path) -> None:
     path.write_text("\n".join(lines) + "\n")
 
 
+def apply_overlay(root: Path, overlay: Path) -> str:
+    """Merge the repository-owned Android configuration tree and return its digest."""
+    if not overlay.is_dir() or overlay.is_symlink():
+        raise ValueError("Android overlay must be a real directory")
+    digest = hashlib.sha256()
+    for source in sorted(overlay.rglob("*"), key=lambda value: value.relative_to(overlay).as_posix()):
+        if source.is_symlink():
+            raise ValueError("Android overlay contains a host symlink")
+        relative = source.relative_to(overlay)
+        if any(part in ("", ".", "..") for part in relative.parts):
+            raise ValueError("invalid Android overlay path")
+        target = root / relative
+        if source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+            digest.update(b"d\0" + relative.as_posix().encode() + b"\0")
+        elif source.is_file():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
+            digest.update(b"f\0" + relative.as_posix().encode() + b"\0")
+            digest.update(source.read_bytes())
+        else:
+            raise ValueError("unsupported Android overlay node: " + relative.as_posix())
+    return digest.hexdigest()
+
+
 def write_archive(root: Path, output: Path, metadata: dict) -> None:
     # Do not include a host filename or wall-clock gzip timestamp in the digest.
     with output.open("xb") as raw, gzip.GzipFile(filename="", mode="wb", fileobj=raw, mtime=0) as compressed, \
@@ -279,6 +304,8 @@ def main() -> int:
     parser.add_argument("--profile", type=Path,
                         default=ROOT / "profiles/scarlet-arm64-flattened.json",
                         help="device profile whose boot properties are applied to product build.prop")
+    parser.add_argument("--overlay", type=Path, default=ROOT / "overlay",
+                        help="repository-owned Android runtime configuration overlay")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", args.version):
@@ -301,6 +328,7 @@ def main() -> int:
         root, metadata = assemble_root(partitions, temporary)
         if args.profile is not None:
             apply_boot_properties(root, args.profile)
+        overlay_digest = apply_overlay(root, args.overlay)
         with zipfile.ZipFile(args.sdk_image) as sdk:
             notice = sdk.read(f"{lock['abi']}/NOTICE.txt")
         notice_path = root / "licenses/android-sdk/NOTICE.txt"
@@ -314,6 +342,7 @@ def main() -> int:
             "partitions": provenance_input["partitions"],
             "source_properties": provenance_input["source_properties"],
             "build_properties": provenance_input["build_properties"],
+            "runtime_overlay_sha256": overlay_digest,
         }
         if args.profile is not None:
             provenance["device_profile"] = {

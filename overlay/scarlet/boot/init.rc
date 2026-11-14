@@ -1,0 +1,25 @@
+# Explicit Scarlet device boot configuration
+import /system/etc/init/hw/init.rc
+import /scarlet/boot/init.d/system
+import /scarlet/boot/init.d/system_ext
+
+on property:init.svc.surfaceflinger=running
+    start bootanim
+
+on post-fs-data
+    mkdir /data/misc/apexdata 0711 root root
+    mkdir /data/misc/apexdata/com.android.tethering 0771 root system
+    mkdir /data/misc/apexdata/com.android.tethering/netstats 0771 root system
+
+on zygote-start && property:ro.crypto.state=unencrypted
+    trigger nonencrypted
+
+service scarlet-display-policy /system/bin/cmd settings put system screen_off_timeout 2147483647
+    class core
+    user shell
+    group shell
+    oneshot
+    disabled
+
+on property:sys.boot_completed=1
+    start scarlet-display-policy

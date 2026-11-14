@@ -1,0 +1,9 @@
+service gatekeeperd /system/bin/gatekeeperd /data/misc/gatekeeper
+    class late_start
+    user system
+    task_profiles ServiceCapacityLow
+
+service vendor.gatekeeper-1-0 /vendor/bin/hw/android.hardware.gatekeeper@1.0-service.software
+    class hal
+    user system
+    group system

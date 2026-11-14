@@ -1,0 +1,33 @@
+# CPU graphics providers selected by the Scarlet manager
+service vendor.graphics-allocator-2-0 /vendor/bin/hw/android.hardware.graphics.allocator@2.0-service.scarlet
+    class hal
+    user system
+    group graphics
+    task_profiles ServiceCapacityLow
+
+service vendor.graphics-composer-2-1 /vendor/bin/hw/android.hardware.graphics.composer@2.1-service.scarlet
+    class hal animation
+    user system
+    group graphics drmrpc
+    task_profiles ServiceCapacityLow
+    onrestart restart surfaceflinger
+
+service surfaceflinger /system/bin/surfaceflinger
+    class core animation
+    user system
+    group graphics drmrpc readproc
+    capabilities SYS_NICE
+    onrestart restart --only-if-running zygote
+    task_profiles HighPerformance
+    socket pdx/system/vr/display/client     stream 0666 system graphics u:object_r:pdx_display_client_endpoint_socket:s0
+    socket pdx/system/vr/display/manager    stream 0666 system graphics u:object_r:pdx_display_manager_endpoint_socket:s0
+    socket pdx/system/vr/display/vsync      stream 0666 system graphics u:object_r:pdx_display_vsync_endpoint_socket:s0
+
+on init
+    mkdir /dev/socket/pdx 0755 system graphics
+    mkdir /dev/socket/pdx/system 0755 system graphics
+    mkdir /dev/socket/pdx/system/vr 0755 system graphics
+    mkdir /dev/socket/pdx/system/vr/display 0755 system graphics
+    start vendor.graphics-allocator-2-0
+    start vendor.graphics-composer-2-1
+    start surfaceflinger

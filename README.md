@@ -29,6 +29,7 @@ curl -LO https://dl.google.com/android/repository/sys-img/android/arm64-v8a-33_r
 python3 producer/tools/build_rootfs.py \
   --sdk-image arm64-v8a-33_r02.zip \
   --profile profiles/scarlet-arm64-flattened.json \
+  --overlay overlay \
   --version v0.1.0 \
   --output producer/artifacts
 ```
@@ -39,7 +40,13 @@ ownership, modes, modification times, hardlinks and extended attributes in the
 PAX archive. Symlink targets retain their original absolute or relative form;
 absolute targets are validated as guest paths without following host files.
 This also preserves references from APEX payloads after stock apexd mounts
-them at `/apex`. No files or services are selected out. It writes:
+them at `/apex`. No files or services are selected out.
+
+The `overlay/` tree supplies the repository-owned `/scarlet` boot policy,
+flattened APEX init configuration and stock InputManager bridge. It is merged
+after the pinned AOSP export, and its digest is recorded in `provenance.json`.
+
+The producer writes:
 
 - `android-aarch64-v0.1.0.tar.gz`
 - `SHA256SUMS`

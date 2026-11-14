@@ -1,0 +1,6 @@
+# Read-only native telemetry; host wake and suspend remain external.
+service health-hal-2-1 /vendor/bin/hw/android.hardware.health@2.1-service
+    class hal charger
+    user system
+    group system
+    file /dev/kmsg w
