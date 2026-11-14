@@ -21,6 +21,9 @@ except ModuleNotFoundError:  # Python 3.9/3.10 hosts use the packaged fallback.
     import tomli as tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import native_archive
+
 REPOSITORY = "petitstrawberry/scarlet-bundle-android"
 VERSION_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 HASH_PATTERN = re.compile(r"[0-9a-f]{64}")
@@ -55,7 +58,8 @@ def read_provenance(archive: Path) -> dict:
     return value
 
 
-def expected_manifest(version: str, archive_name: str, digest: str) -> dict:
+def expected_manifest(version: str, archive_name: str, digest: str,
+                      native_name: str, native_digest: str) -> dict:
     return {"layers": [{
         "kind": "archive",
         "url": (f"https://github.com/{REPOSITORY}/releases/download/"
@@ -64,6 +68,14 @@ def expected_manifest(version: str, archive_name: str, digest: str) -> dict:
         "format": "tar-gz",
         "strip_components": 1,
         "to": "/systems/android-aarch64",
+    }, {
+        "kind": "archive",
+        "url": (f"https://github.com/{REPOSITORY}/releases/download/"
+                f"{version}/{native_name}"),
+        "sha256": {"aarch64": f"sha256:{native_digest}"},
+        "format": "tar-gz",
+        "strip_components": 1,
+        "to": "/",
     }]}
 
 
@@ -92,7 +104,7 @@ def packed_producer_sources(output: Path) -> None:
 
 def validate_release(*, artifact_dir: Path, version: str, build_revision: str,
                      source_archive: Path, source_url: str, source_sha256: str,
-                     source_revision: str) -> tuple[str, dict[str, str]]:
+                     source_revision: str) -> tuple[str, str, dict[str, str]]:
     if VERSION_PATTERN.fullmatch(version) is None:
         raise ValueError("VERSION must look like v0.1.0")
     if git("rev-parse", "HEAD").strip() != build_revision:
@@ -107,18 +119,24 @@ def validate_release(*, artifact_dir: Path, version: str, build_revision: str,
         raise ValueError("corresponding source archive SHA-256 mismatch")
 
     archive_name = f"android-aarch64-{version}.tar.gz"
+    native_name = f"android-native-aarch64-{version}.tar.gz"
     archive = artifact_dir / archive_name
+    native = artifact_dir / native_name
     manifest_path = artifact_dir / "bundle.toml"
     sums_path = artifact_dir / "SHA256SUMS"
-    for path in (archive, manifest_path, sums_path):
+    for path in (archive, native, manifest_path, sums_path):
         if not path.is_file() or path.is_symlink():
             raise ValueError(f"missing release input: {path.name}")
     digest = sha256_file(archive)
-    if sums_path.read_text() != f"{digest}  {archive_name}\n":
-        raise ValueError("SHA256SUMS does not match the archive")
+    native_identity = native_archive.validate_native_archive(native)
+    native_digest = str(native_identity["sha256"])
+    if sums_path.read_text() != (f"{digest}  {archive_name}\n"
+                                 f"{native_digest}  {native_name}\n"):
+        raise ValueError("SHA256SUMS does not match the release archives")
     with manifest_path.open("rb") as stream:
-        if tomllib.load(stream) != expected_manifest(version, archive_name, digest):
-            raise ValueError("bundle.toml does not pin the verified archive")
+        if tomllib.load(stream) != expected_manifest(
+                version, archive_name, digest, native_name, native_digest):
+            raise ValueError("bundle.toml does not pin both verified archives")
     provenance = read_provenance(archive)
     source = provenance.get("source")
     properties = provenance.get("build_properties")
@@ -128,11 +146,13 @@ def validate_release(*, artifact_dir: Path, version: str, build_revision: str,
     build_id = re.search(r"^ro\.system\.build\.id=(.+)$", properties, re.M)
     if fingerprint is None or build_id is None:
         raise ValueError("archive provenance lacks Android identity")
-    return archive_name, {
+    return archive_name, native_name, {
         "fingerprint": fingerprint.group(1),
         "build_id": build_id.group(1),
         "source_url": str(source.get("url", "")),
         "source_sha256": str(source.get("sha256", "")),
+        "native_archive": native_name,
+        "native_sha256": native_digest,
     }
 
 
@@ -151,12 +171,13 @@ def main() -> int:
 
     version = args.version
     artifact_dir = args.artifact_dir.resolve()
-    archive_name, identity = validate_release(
+    archive_name, native_name, identity = validate_release(
         artifact_dir=artifact_dir, version=version, build_revision=args.build_revision,
         source_archive=args.source_archive.resolve(), source_url=args.source_url,
         source_sha256=args.source_sha256, source_revision=args.source_revision)
     if args.dry_run:
-        print(json.dumps({"archive": archive_name, "identity": identity,
+        print(json.dumps({"archive": archive_name, "native_archive": native_name,
+                          "identity": identity,
                           "revision": args.source_revision}, sort_keys=True))
         return 0
 
@@ -174,6 +195,8 @@ def main() -> int:
         "kind": SOURCE_RECORD,
         "version": version,
         "binary": {"name": archive_name, "sha256": sha256_file(artifact_dir / archive_name)},
+        "native": {"name": native_name,
+                   "sha256": sha256_file(artifact_dir / native_name)},
         "provenance": identity,
         "aosp_source": {
             "url": args.source_url,
@@ -184,7 +207,8 @@ def main() -> int:
     }
     record_path = artifact_dir / "corresponding-source.json"
     record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
-    assets = [artifact_dir / archive_name, source_path, producer_path, record_path,
+    assets = [artifact_dir / archive_name, artifact_dir / native_name,
+              source_path, producer_path, record_path,
               artifact_dir / "SHA256SUMS", artifact_dir / "bundle.toml"]
     release_sums = artifact_dir / "SHA256SUMS.release"
     release_sums.write_text("".join(f"{sha256_file(path)}  {path.name}\n"

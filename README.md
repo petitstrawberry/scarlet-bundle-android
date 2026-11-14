@@ -16,9 +16,11 @@ under `manager/`, and the graphics HAL and stock adapters are under `graphics/`.
 The boot profile and its Shield policy translator are under `profiles/` and
 `producer/policy/`. Prepared init/APEX files and source-policy exports still come
 from the Scarlet development inputs.
-No binary release has been published. The release workflow requires the exact
-corresponding-source archive, SHA-256 and source revision for SDK build 10940250
-before it creates a draft release, pins the bundle and makes the release public.
+`v0.1.14` is public and contains the stock AOSP userspace archive only. The
+current producer adds a separately built native manager/frontend archive. The
+release workflow requires the exact corresponding-source archive, SHA-256 and
+source revision for SDK build 10940250 before it creates a draft release, pins
+the bundle and makes the release public.
 
 ## Build
 
@@ -48,10 +50,11 @@ after the pinned AOSP export, and its digest is recorded in `provenance.json`.
 
 The producer writes:
 
-- `android-aarch64-v0.1.0.tar.gz`
+- `android-aarch64-v0.1.0.tar.gz` (the selected Android runtime view)
+- `android-native-aarch64-v0.1.0.tar.gz` (native manager and frontend overlay)
 - `SHA256SUMS`
 - `bundle.toml` as the candidate hash-pinned consumer manifest
-- `provenance.json` inside the artifact
+- `provenance.json` inside the Android runtime archive
 
 Validate the archive with
 `python3 producer/tests/check_archive.py producer/artifacts/android-aarch64-v0.1.0.tar.gz`.
@@ -78,11 +81,13 @@ AOSP source archive. Tag and main-branch releases use the repository variables
 `ANDROID_SOURCE_ARCHIVE_URL`, `ANDROID_SOURCE_ARCHIVE_SHA256` and
 `ANDROID_SOURCE_REVISION`.
 
-CI validates the binary archive and source digest, creates a draft prerelease,
-checks every uploaded asset, commits the verified manifest to
-`bundles/android/bundle.toml`, and only then publishes the release. The release
-contains the Android archive, exact AOSP sources, producer sources,
-`corresponding-source.json`, checksums and the pinned bundle manifest.
+CI imports the checksum-pinned complete runtime archive, builds the native app
+and frontend with the pinned Scarlet Rust toolchain, validates both archive
+layouts and source digests, creates a draft prerelease, checks every uploaded
+asset, commits the two-layer manifest to `bundles/android/bundle.toml`, and only
+then publishes the release. The release contains both binary archives, exact
+AOSP sources, producer sources, `corresponding-source.json`, checksums and the
+pinned bundle manifest.
 
 ## Native userspace
 
@@ -105,34 +110,27 @@ Environment and device/input views, starts stock Android init in a child
 PID/mount namespace, and owns that process scope. The display frontend connects
 to the desktop's existing SWS. Closing its window ends the Android session.
 
-`manager/app.toml` is the normal Scarlet app recipe. `bundles/native/bundle.toml`
-installs it at `/applications/android.app`, the frontend at `/bin/android-runtime`,
-and the explicit administrator grant under `/etc/stemd.d/capabilities`. The
-generated app descriptor provides its catalog entry with the same exact argv.
+`manager/app.toml` is the normal Scarlet app recipe. CI builds it through
+`cargo-scarlet app build`, so `/applications/android.app` contains the generated
+descriptor as well as `bin/android`. The frontend is installed at
+`/bin/android-runtime`, and the explicit administrator grant remains under
+`/etc/stemd.d/capabilities`. These portions form
+`android-native-aarch64-vX.Y.Z.tar.gz`, installed at `/` after the complete
+Android runtime archive. No init import, autostart entry or generated init file
+belongs to this native layer. `bundles/native/bundle.toml` remains the local
+source-build recipe; release consumers use the two archive layers in
+`bundles/android/bundle.toml`.
+
 The grant pairs `target = 3` with `shield_policy_factory = 4`. This requires
 Scarlet's explicit factory grants from commit
 [`7c96ed773`](https://github.com/petitstrawberry/Scarlet/commit/7c96ed773), which
 includes the whole-View mount preservation fix and the native factory API.
-The complete session archive has imported through the SDK and booted the normal
-four-core HVF desktop. A manual catalog launch received both capabilities,
-created the Shield policy, registered 81 boot file labels and started stock init
-in its own PID/mount namespace. After preserving APEX symlink targets through
-archive import, Zygote and system_server also started. The native Android window,
-SurfaceFlinger and graphics HAL processes were observed; the window content
-remained black. Home and app display through this launch path remain unverified.
-Stock init diagnostics exposed label-restoration failures and unsupported
-SYSLOG/AUDIT_CONTROL capabilities requested by stock logd. Both also occur in
-the older diagnostic boot log and are not established causes of the new black
-window. The producer now derives compact relabel sets from concrete stock
-policy evidence. The older launch supplied a separate log receiver and a
-preloaded library that replaced Power HAL boost/mode calls. The ordinary
-manager loads neither library. Full AOSP also supplies additional vendor VINTF
-fragments; declaring Power HAL without starting its provider leads stock
-clients into service waits. Session packaging must apply the explicit device
-profile to those fragments as well as the aggregate manifest. Configured launches require the exact
-command and capture startup errors in the native logd. The stock init lifecycle
-begins after an explicit catalog launch.
-The full producer archive above contains stock AOSP only.
+The earlier normal launch path reached Android home. The release consumes a
+checksum-pinned complete runtime artifact that includes the flattened APEX,
+graphics HAL/adapters and prepared boot adjustments; CI does not rebuild those
+components. Native compilation and archive import are validated, while final
+release-runtime boot and graphics validation remain pending. This does not claim
+that every Android service or display path has completed.
 
 ## Complete session archive
 
@@ -159,8 +157,8 @@ Include the empty `data/dalvik-cache` and `data/dalvik-cache/arm64` directories
 in that prepared inventory: the manager binds their labels before stock init
 starts. The stock profile does not depend on the old development sample APK.
 
-`producer/tools/build_session.py` combines the full stock archive with a prepared
-boot profile, the native app, frontend and graphics outputs. It verifies the
+`producer/tools/build_session.py` combines an AOSP archive with a prepared boot
+profile, the native app, frontend and graphics outputs. It verifies the
 input manifests and file hashes, preserves stock metadata and symlink aliases,
 and records each explicit stock-file replacement in the session lock. Prepared
 inputs must include the assembled stock-init configuration. Autostart hooks are
@@ -180,13 +178,13 @@ python3 producer/tools/build_session.py \
   --version v0.1.0 --output producer/artifacts/session
 ```
 
-The generated `bundle.toml` has one hash-pinned archive layer containing
-`/applications/android.app`, `/bin/android-runtime`, the stemd grant and the
-complete `/systems/android-aarch64` tree. Add that manifest as a normal `bundle`
-layer in the Scarlet root image. Local builds use an absolute `file://` URL;
-`--archive-url` selects the eventual release URL without changing archive bytes.
-Existing outputs are never overwritten. The session lock records all input
-hashes and original/installed hashes for device-profile replacements.
+That manual session command is separate from release CI. Release CI imports the
+preserved, checksum-pinned runtime with
+`producer/tools/import_session_runtime.py`, then adds the independently built
+native archive. A release `bundle.toml` has two hash-pinned archive layers: the
+complete runtime at `/systems/android-aarch64` and the native app/frontend at
+`/`. Existing outputs are never overwritten, and the imported archive retains
+its input lock and upstream provenance.
 
 ## Licensing
 
@@ -198,8 +196,9 @@ image identity, build fingerprint, and exact input digest are retained in every
 archive. See [ATTRIBUTION.md](ATTRIBUTION.md).
 
 The `v*` tag or manual workflow requires a corresponding-source archive URL,
-SHA-256 and exact source revision. CI builds and validates the binary, verifies
-the source digest, creates a draft prerelease with both archives and provenance,
-then commits the verified manifest to `bundles/android/bundle.toml` before the
-release is made public. The `default` tag and retained NOTICE are input identity,
-not a substitute for the source record. See `producer/release-notes.md`.
+SHA-256 and exact source revision. CI imports the pinned complete runtime and
+builds the native overlay, validates both binary archives and the source digest,
+creates a draft prerelease with both archives and provenance, then commits the
+verified manifest to `bundles/android/bundle.toml` before the release is made
+public. The `default` tag and retained NOTICE are input identity, not a
+substitute for the source record. See `producer/release-notes.md`.
